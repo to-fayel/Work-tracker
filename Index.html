@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>TimeKeeper Pro Max</title>
+    <title>TimeKeeper Ultra</title>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -11,12 +11,18 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500&family=Plus+Jakarta+Sans:wght@400;600;800&display=swap');
-        body { font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; }
+        body { font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; transition: background-color 0.3s ease; }
         .timer-font { font-family: 'JetBrains Mono', monospace; }
-        input[type="time"] { border: none; background: transparent; font-weight: 800; width: 100%; }
+        .dark { background-color: #0f172a; color: #f8fafc; }
+        .dark .bg-white { background-color: #1e293b; border-color: #334155; color: #f8fafc; }
+        .dark .text-slate-800 { color: #f1f5f9; }
+        .dark .text-slate-400 { color: #94a3b8; }
+        .dark .border-slate-100 { border-color: #334155; }
+        input[type="time"], input[type="date"] { border: 1px solid #e2e8f0; border-radius: 0.5rem; padding: 0.5rem; width: 100%; background: transparent; }
+        .dark input { border-color: #475569; color: white; }
     </style>
 </head>
-<body class="bg-slate-50 text-slate-900">
+<body>
     <div id="root"></div>
 
     <script type="text/babel">
@@ -32,8 +38,28 @@
             const [isPaused, setIsPaused] = useState(() => JSON.parse(localStorage.getItem('is-paused')) || false);
             const [accumulatedMs, setAccumulatedMs] = useState(() => JSON.parse(localStorage.getItem('accumulated-ms')) || 0);
             const [hourlyRate, setHourlyRate] = useState(() => parseFloat(localStorage.getItem('hourly-rate')) || 6.00);
+            const [isDark, setIsDark] = useState(() => JSON.parse(localStorage.getItem('dark-mode')) || false);
+            const [showManual, setShowManual] = useState(false);
             const [timer, setTimer] = useState({ elapsed: "00:00:00", livePay: "0.00" });
-            const [editingId, setEditingId] = useState(null);
+
+            // --- Notifications Logic ---
+            useEffect(() => {
+                if ("Notification" in window && Notification.permission === "default") {
+                    Notification.requestPermission();
+                }
+                
+                // Reminder: If clocked in for > 8 hours, remind to clock out
+                const reminderInterval = setInterval(() => {
+                    if (startTime && !isPaused) {
+                        const diff = new Date() - startTime + accumulatedMs;
+                        if (diff > 28800000) { // 8 hours
+                            new Notification("TimeKeeper", { body: "You've been clocked in for over 8 hours. Did you forget to clock out?" });
+                        }
+                    }
+                }, 3600000); // Check every hour
+
+                return () => clearInterval(reminderInterval);
+            }, [startTime, isPaused, accumulatedMs]);
 
             // --- Persistence ---
             useEffect(() => {
@@ -42,29 +68,25 @@
                 localStorage.setItem('is-paused', JSON.stringify(isPaused));
                 localStorage.setItem('accumulated-ms', JSON.stringify(accumulatedMs));
                 localStorage.setItem('hourly-rate', hourlyRate.toString());
-            }, [entries, startTime, isPaused, accumulatedMs, hourlyRate]);
+                localStorage.setItem('dark-mode', JSON.stringify(isDark));
+                document.body.className = isDark ? 'dark' : '';
+            }, [entries, startTime, isPaused, accumulatedMs, hourlyRate, isDark]);
 
-            // --- Timer Logic ---
+            // --- Timer Core ---
             useEffect(() => {
                 let interval;
                 if (startTime && !isPaused) {
                     interval = setInterval(() => {
-                        const now = new Date();
-                        const sessionMs = now - startTime;
-                        const totalMs = accumulatedMs + sessionMs;
-                        
+                        const totalMs = (new Date() - startTime) + accumulatedMs;
                         const h = Math.floor(totalMs / 3600000);
                         const m = Math.floor((totalMs % 3600000) / 60000);
                         const s = Math.floor((totalMs % 60000) / 1000);
-                        
-                        const liveHours = totalMs / 3600000;
                         setTimer({
                             elapsed: `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`,
-                            livePay: (liveHours * hourlyRate).toFixed(2)
+                            livePay: ((totalMs / 3600000) * hourlyRate).toFixed(2)
                         });
                     }, 1000);
-                } else if (isPaused || !startTime) {
-                    // Update display for paused state
+                } else {
                     const h = Math.floor(accumulatedMs / 3600000);
                     const m = Math.floor((accumulatedMs % 3600000) / 60000);
                     const s = Math.floor((accumulatedMs % 60000) / 1000);
@@ -76,190 +98,142 @@
                 return () => clearInterval(interval);
             }, [startTime, isPaused, accumulatedMs, hourlyRate]);
 
-            // --- Core Actions ---
-            const handleClockIn = () => {
-                setStartTime(new Date());
-                setIsPaused(false);
-                setAccumulatedMs(0);
-            };
-
-            const handlePauseResume = () => {
-                if (isPaused) {
-                    setStartTime(new Date());
-                    setIsPaused(false);
-                } else {
-                    const sessionMs = new Date() - startTime;
-                    setAccumulatedMs(prev => prev + sessionMs);
-                    setIsPaused(true);
-                }
-            };
-
+            // --- Actions ---
             const handleClockOut = () => {
-                if (!confirm("Finish work and save session?")) return;
-                
-                let finalMs = accumulatedMs;
-                if (startTime && !isPaused) {
-                    finalMs += (new Date() - startTime);
-                }
-
-                if (finalMs < 1000) {
-                    resetClock();
-                    return;
-                }
-
+                if (!confirm("Finish session?")) return;
+                const finalMs = (startTime && !isPaused ? (new Date() - startTime) : 0) + accumulatedMs;
                 const hours = finalMs / 3600000;
-                const newEntry = {
-                    id: Date.now(),
-                    start: new Date(Date.now() - finalMs).toISOString(),
-                    end: new Date().toISOString(),
-                    hours: parseFloat(hours.toFixed(4)),
-                    pay: parseFloat((hours * hourlyRate).toFixed(2))
-                };
-                
+                const newEntry = { id: Date.now(), start: new Date(Date.now()-finalMs).toISOString(), end: new Date().toISOString(), hours, pay: hours * hourlyRate };
                 setEntries([newEntry, ...entries]);
-                resetClock();
+                setStartTime(null); setIsPaused(false); setAccumulatedMs(0);
             };
 
-            const resetClock = () => {
-                setStartTime(null);
-                setIsPaused(false);
-                setAccumulatedMs(0);
+            const addManualEntry = (e) => {
+                e.preventDefault();
+                const data = new FormData(e.target);
+                const start = new Date(`${data.get('date')}T${data.get('start')}`);
+                const end = new Date(`${data.get('date')}T${data.get('end')}`);
+                const hours = (end - start) / 3600000;
+                if (hours <= 0) return alert("End time must be after start time");
+                const newEntry = { id: Date.now(), start: start.toISOString(), end: end.toISOString(), hours, pay: hours * hourlyRate };
+                setEntries([newEntry, ...entries]);
+                setShowManual(false);
             };
-
-            const deleteEntry = (id) => confirm("Delete this entry?") && setEntries(entries.filter(e => e.id !== id));
 
             const exportCSV = () => {
-                const headers = "Date,Start Time,End Time,Duration (Hrs),Earnings (£)\n";
-                const rows = entries.map(e => {
-                    const d = new Date(e.start);
-                    return `${d.toLocaleDateString()},${d.toLocaleTimeString()},${new Date(e.end).toLocaleTimeString()},${e.hours.toFixed(2)},${e.pay.toFixed(2)}`;
-                }).join("\n");
-                
+                const headers = "Date,Start,End,Hours,Pay\n";
+                const rows = entries.map(e => `${new Date(e.start).toLocaleDateString()},${new Date(e.start).toLocaleTimeString()},${new Date(e.end).toLocaleTimeString()},${e.hours.toFixed(2)},${e.pay.toFixed(2)}`).join("\n");
                 const blob = new Blob([headers + rows], { type: 'text/csv' });
                 const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `WorkLogs_${new Date().toLocaleDateString().replace(/\//g,'-')}.csv`;
-                a.click();
+                const a = document.createElement('a'); a.href = url; a.download = "WorkHistory.csv"; a.click();
             };
 
-            // --- Stats ---
             const stats = useMemo(() => {
                 const now = new Date();
                 const startOfWeek = new Date(now.setDate(now.getDate() - now.getDay()));
-                const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-
                 return entries.reduce((acc, curr) => {
-                    const date = new Date(curr.start);
-                    acc.totalH += curr.hours;
-                    acc.totalP += curr.pay;
-
-                    if (date.toLocaleDateString() === new Date().toLocaleDateString()) {
-                        acc.todayH += curr.hours;
-                        acc.todayP += curr.pay;
-                    }
-                    if (date >= startOfWeek) { acc.weekP += curr.pay; acc.weekH += curr.hours; }
-                    if (date >= startOfMonth) { acc.monthP += curr.pay; acc.monthH += curr.hours; }
-                    
+                    const d = new Date(curr.start);
+                    acc.tH += curr.hours; acc.tP += curr.pay;
+                    if (d.toLocaleDateString() === new Date().toLocaleDateString()) { acc.dH += curr.hours; acc.dP += curr.pay; }
+                    if (d >= startOfWeek) { acc.wH += curr.hours; acc.wP += curr.pay; }
                     return acc;
-                }, { totalH: 0, totalP: 0, todayH: 0, todayP: 0, weekP: 0, weekH: 0, monthP: 0, monthH: 0 });
+                }, { tH: 0, tP: 0, dH: 0, dP: 0, wH: 0, wP: 0 });
             }, [entries]);
 
             return (
-                <div className="max-w-md mx-auto min-h-screen pb-10">
-                    <div className="p-6 flex justify-between items-center">
-                        <h1 className="text-2xl font-extrabold text-slate-800 tracking-tight">TimeKeeper<span className="text-blue-600">.</span></h1>
-                        <div className="bg-white px-4 py-2 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-2">
-                            <span className="text-[10px] font-black text-slate-400 uppercase">Rate</span>
-                            <input type="number" value={hourlyRate} onChange={(e) => setHourlyRate(parseFloat(e.target.value) || 0)} className="w-10 font-black outline-none text-blue-600" />
-                        </div>
-                    </div>
-
-                    {/* Timer Section */}
-                    <div className="px-6 mb-8">
-                        <div className={`rounded-[2.5rem] p-8 text-center transition-all duration-500 ${startTime ? 'bg-slate-900 text-white shadow-2xl' : 'bg-white border border-slate-100 shadow-xl shadow-slate-200/50'}`}>
-                            <div className="timer-font text-5xl font-black mb-2 tracking-tighter tabular-nums">
-                                {timer.elapsed}
-                            </div>
-                            <div className={`text-lg font-bold mb-6 ${isPaused ? 'text-orange-400' : 'text-green-400'}`}>
-                                {isPaused ? "PAUSED" : `+ £${timer.livePay}`}
-                            </div>
-                            
-                            <div className="flex gap-3">
-                                {!startTime ? (
-                                    <button onClick={handleClockIn} className="w-full py-5 rounded-3xl font-black text-xl bg-blue-600 text-white shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2">
-                                        <i className="fa-solid fa-play"></i> START
-                                    </button>
-                                ) : (
-                                    <>
-                                        <button onClick={handlePauseResume} className={`flex-1 py-5 rounded-3xl font-black text-lg transition-all ${isPaused ? 'bg-green-500 shadow-green-500/20' : 'bg-orange-500 shadow-orange-500/20'} text-white shadow-lg flex items-center justify-center gap-2`}>
-                                            <i className={`fa-solid ${isPaused ? 'fa-play' : 'fa-pause'}`}></i> {isPaused ? "RESUME" : "PAUSE"}
-                                        </button>
-                                        <button onClick={handleClockOut} className="flex-1 py-5 rounded-3xl font-black text-lg bg-rose-500 text-white shadow-lg shadow-rose-500/20 flex items-center justify-center gap-2">
-                                            <i className="fa-solid fa-stop"></i> FINISH
-                                        </button>
-                                    </>
-                                )}
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Stats Grid */}
-                    <div className="px-6 grid grid-cols-2 gap-4 mb-8">
-                        <div className="bg-white p-5 rounded-3xl border border-slate-100 shadow-sm">
-                            <p className="text-[10px] font-black text-slate-400 uppercase mb-1">Today</p>
-                            <p className="text-lg font-black text-slate-800">£{stats.todayP.toFixed(2)}</p>
-                            <p className="text-[10px] font-bold text-blue-500">{stats.todayH.toFixed(2)}h worked</p>
-                        </div>
-                        <div className="bg-blue-600 p-5 rounded-3xl shadow-lg shadow-blue-600/20 text-white">
-                            <p className="text-[10px] font-black text-blue-200 uppercase mb-1">Lifetime</p>
-                            <p className="text-lg font-black">£{stats.totalP.toFixed(2)}</p>
-                            <p className="text-[10px] font-bold text-blue-100">{stats.totalH.toFixed(2)}h total</p>
-                        </div>
-                        <div className="bg-white p-4 rounded-2xl border border-slate-100">
-                            <p className="text-[10px] font-black text-slate-400 uppercase">Weekly</p>
-                            <p className="font-black text-slate-700">£{stats.weekP.toFixed(2)}</p>
-                            <p className="text-[9px] font-bold text-slate-400">{stats.weekH.toFixed(2)}h</p>
-                        </div>
-                        <div className="bg-white p-4 rounded-2xl border border-slate-100">
-                            <p className="text-[10px] font-black text-slate-400 uppercase">Monthly</p>
-                            <p className="font-black text-slate-700">£{stats.monthP.toFixed(2)}</p>
-                            <p className="text-[9px] font-bold text-slate-400">{stats.monthH.toFixed(2)}h</p>
-                        </div>
-                    </div>
-
-                    {/* Activity Log */}
-                    <div className="px-6 space-y-4">
-                        <div className="flex justify-between items-center px-1">
-                            <h2 className="font-black text-slate-800">Activity Log</h2>
-                            <button onClick={exportCSV} className="text-[10px] font-black bg-slate-800 text-white px-3 py-1.5 rounded-lg flex items-center gap-1.5 active:scale-95 transition-transform">
-                                <i className="fa-solid fa-download"></i> EXPORT CSV
+                <div className="max-w-md mx-auto min-h-screen p-6 relative">
+                    {/* Header */}
+                    <div className="flex justify-between items-center mb-8">
+                        <h1 className="text-2xl font-black">TimeKeeper<span className="text-blue-500">.</span></h1>
+                        <div className="flex gap-2">
+                            <button onClick={() => setIsDark(!isDark)} className="p-3 rounded-2xl bg-white shadow-sm border border-slate-100">
+                                <i className={`fa-solid ${isDark ? 'fa-sun text-yellow-500' : 'fa-moon text-slate-400'}`}></i>
+                            </button>
+                            <button onClick={() => setShowManual(true)} className="p-3 rounded-2xl bg-blue-600 text-white shadow-lg shadow-blue-500/30">
+                                <i className="fa-solid fa-plus"></i>
                             </button>
                         </div>
-                        
-                        {entries.length === 0 && <div className="text-center py-10 text-slate-300 text-sm font-bold italic bg-white rounded-3xl border border-dashed border-slate-200 tracking-tight">No sessions logged yet.</div>}
-                        
+                    </div>
+
+                    {/* Timer */}
+                    <div className={`rounded-[2.5rem] p-8 text-center mb-8 transition-all ${startTime ? 'bg-slate-900 text-white shadow-2xl' : 'bg-white border border-slate-100 shadow-xl shadow-slate-200/50'}`}>
+                        <div className="timer-font text-5xl font-black mb-2 tracking-tighter">{timer.elapsed}</div>
+                        <div className={`text-lg font-bold mb-6 ${isPaused ? 'text-orange-400' : 'text-green-400'}`}>{isPaused ? "PAUSED" : `+ £${timer.livePay}`}</div>
+                        <div className="flex gap-3">
+                            {!startTime ? (
+                                <button onClick={() => { setStartTime(new Date()); setIsPaused(false); setAccumulatedMs(0); }} className="w-full py-5 rounded-3xl font-black text-xl bg-blue-600 text-white shadow-lg shadow-blue-600/30">START</button>
+                            ) : (
+                                <>
+                                    <button onClick={() => { if(isPaused){ setStartTime(new Date()); setIsPaused(false); } else { setAccumulatedMs(prev => prev + (new Date()-startTime)); setIsPaused(true); } }} className={`flex-1 py-5 rounded-3xl font-black text-lg ${isPaused ? 'bg-green-500' : 'bg-orange-500'} text-white shadow-lg`}>{isPaused ? "RESUME" : "PAUSE"}</button>
+                                    <button onClick={handleClockOut} className="flex-1 py-5 rounded-3xl font-black text-lg bg-rose-500 text-white shadow-lg">FINISH</button>
+                                </>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Rate/Stats */}
+                    <div className="grid grid-cols-2 gap-4 mb-8">
+                        <div className="bg-white p-4 rounded-3xl border border-slate-100 shadow-sm col-span-2 flex justify-between items-center">
+                            <span className="text-xs font-black uppercase text-slate-400 tracking-widest">Hourly Rate</span>
+                            <div className="flex items-center gap-1 font-black text-blue-500">£<input type="number" value={hourlyRate} onChange={(e)=>setHourlyRate(parseFloat(e.target.value)||0)} className="w-10 bg-transparent outline-none border-none text-right" /></div>
+                        </div>
+                        <div className="bg-white p-5 rounded-3xl border border-slate-100 shadow-sm">
+                            <p className="text-[10px] font-black text-slate-400 uppercase mb-1">Today</p>
+                            <p className="text-lg font-black leading-tight">£{stats.dP.toFixed(2)}</p>
+                            <p className="text-[10px] font-bold text-blue-500">{stats.dH.toFixed(2)}h worked</p>
+                        </div>
+                        <div className="bg-blue-600 p-5 rounded-3xl shadow-lg shadow-blue-500/20 text-white">
+                            <p className="text-[10px] font-black text-blue-200 uppercase mb-1">Lifetime</p>
+                            <p className="text-lg font-black leading-tight">£{stats.tP.toFixed(2)}</p>
+                            <p className="text-[10px] font-bold text-blue-100">{stats.tH.toFixed(2)}h total</p>
+                        </div>
+                    </div>
+
+                    {/* History */}
+                    <div className="flex justify-between items-center mb-4 px-1">
+                        <h2 className="font-black text-slate-800">History</h2>
+                        <button onClick={exportCSV} className="text-[10px] font-black text-blue-500 uppercase tracking-widest">Export CSV</button>
+                    </div>
+                    <div className="space-y-4">
                         {entries.map(e => (
-                            <div key={e.id} className="bg-white p-5 rounded-3xl border border-slate-50 shadow-sm flex justify-between items-center group">
+                            <div key={e.id} className="bg-white p-5 rounded-3xl border border-slate-50 shadow-sm flex justify-between items-center">
                                 <div className="flex items-center gap-4">
                                     <div className="bg-slate-50 h-12 w-12 rounded-2xl flex flex-col items-center justify-center text-slate-400">
-                                        <span className="text-[8px] font-black uppercase">{new Date(e.start).toLocaleDateString('en-GB', {month:'short'})}</span>
+                                        <span className="text-[8px] font-black uppercase">{new Date(e.start).toLocaleDateString('en-GB',{month:'short'})}</span>
                                         <span className="text-sm font-black text-slate-700">{new Date(e.start).getDate()}</span>
                                     </div>
                                     <div>
-                                        <p className="text-xs font-bold text-slate-800 italic opacity-60">
-                                            {new Date(e.start).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})} - {new Date(e.end).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}
-                                        </p>
-                                        <p className="text-sm font-black text-slate-900 mt-0.5">{e.hours.toFixed(2)}h session</p>
+                                        <p className="text-xs font-bold text-slate-400">{new Date(e.start).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})} - {new Date(e.end).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</p>
+                                        <p className="text-sm font-black text-slate-900">{e.hours.toFixed(2)}h session</p>
                                     </div>
                                 </div>
                                 <div className="text-right">
-                                    <p className="font-black text-green-600 text-lg leading-none">£{e.pay.toFixed(2)}</p>
-                                    <button onClick={() => deleteEntry(e.id)} className="text-slate-200 hover:text-rose-500 mt-2 transition-colors"><i className="fa-solid fa-trash text-xs"></i></button>
+                                    <p className="font-black text-green-600">£{e.pay.toFixed(2)}</p>
+                                    <button onClick={()=>confirm("Delete?") && setEntries(entries.filter(x=>x.id!==e.id))} className="text-slate-200 hover:text-rose-500 mt-1"><i className="fa-solid fa-trash-can text-[10px]"></i></button>
                                 </div>
                             </div>
                         ))}
                     </div>
+
+                    {/* Manual Entry Modal */}
+                    {showManual && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-slate-900/80 backdrop-blur-sm">
+                            <div className="bg-white w-full max-w-sm rounded-[2.5rem] p-8 shadow-2xl">
+                                <h3 className="text-xl font-black mb-6">Add Session</h3>
+                                <form onSubmit={addManualEntry} className="space-y-4">
+                                    <div><label className="text-[10px] font-black uppercase text-slate-400 ml-1">Date</label><input type="date" name="date" required defaultValue={new Date().toISOString().split('T')[0]} /></div>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div><label className="text-[10px] font-black uppercase text-slate-400 ml-1">Start</label><input type="time" name="start" required /></div>
+                                        <div><label className="text-[10px] font-black uppercase text-slate-400 ml-1">End</label><input type="time" name="end" required /></div>
+                                    </div>
+                                    <div className="flex gap-3 pt-4">
+                                        <button type="button" onClick={()=>setShowManual(false)} className="flex-1 py-4 rounded-2xl font-black text-slate-400 bg-slate-100 uppercase text-xs">Cancel</button>
+                                        <button type="submit" className="flex-1 py-4 rounded-2xl font-black text-white bg-blue-600 uppercase text-xs shadow-lg shadow-blue-500/30">Save</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    )}
                 </div>
             );
         };
