@@ -2,52 +2,80 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TimeKeeper Mobile</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>TimeKeeper Pro</title>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/lucide/0.263.0/lucide.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
-        body { font-family: 'Inter', sans-serif; }
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500&family=Plus+Jakarta+Sans:wght@400;600;800&display=swap');
+        body { font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; }
+        .timer-font { font-family: 'JetBrains Mono', monospace; }
+        .glass-card { background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(10px); }
     </style>
 </head>
-<body class="bg-gray-50">
+<body class="bg-slate-50 text-slate-900">
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useMemo } = React;
+        const { useState, useEffect, useMemo, useRef } = React;
 
         const App = () => {
-            const [entries, setEntries] = useState(() => {
-                const saved = localStorage.getItem('work-entries');
-                return saved ? JSON.parse(saved) : [];
-            });
-            
+            // --- State ---
+            const [entries, setEntries] = useState(() => JSON.parse(localStorage.getItem('work-entries')) || []);
             const [startTime, setStartTime] = useState(() => {
                 const saved = localStorage.getItem('active-start-time');
                 return saved ? new Date(saved) : null;
             });
+            const [hourlyRate, setHourlyRate] = useState(() => parseFloat(localStorage.getItem('hourly-rate')) || 6.00);
+            const [elapsed, setElapsed] = useState("00:00:00");
 
-            const [hourlyRate, setHourlyRate] = useState(() => {
-                const saved = localStorage.getItem('hourly-rate');
-                return saved ? parseFloat(saved) : 6.00;
-            });
+            // --- Timer Logic ---
+            useEffect(() => {
+                let interval;
+                if (startTime) {
+                    interval = setInterval(() => {
+                        const now = new Date();
+                        const diff = now - startTime;
+                        const h = Math.floor(diff / 3600000);
+                        const m = Math.floor((diff % 3600000) / 60000);
+                        const s = Math.floor((diff % 60000) / 1000);
+                        setElapsed(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`);
+                    }, 1000);
+                } else {
+                    setElapsed("00:00:00");
+                }
+                return () => clearInterval(interval);
+            }, [startTime]);
 
+            // --- Persistence ---
             useEffect(() => {
                 localStorage.setItem('work-entries', JSON.stringify(entries));
                 localStorage.setItem('active-start-time', startTime ? startTime.toISOString() : '');
                 localStorage.setItem('hourly-rate', hourlyRate.toString());
             }, [entries, startTime, hourlyRate]);
 
-            const handleClockIn = () => { if (!startTime) setStartTime(new Date()); };
+            // --- Actions ---
+            const handleClockIn = () => {
+                if (startTime) return;
+                setStartTime(new Date());
+            };
 
             const handleClockOut = () => {
                 if (!startTime) return;
+                if (!confirm("Are you sure you want to clock out?")) return;
+
                 const endTime = new Date();
-                const hours = (endTime - startTime) / (1000 * 60 * 60);
+                const diffMs = endTime - startTime;
+                
+                if (diffMs <= 0) {
+                    setStartTime(null);
+                    return;
+                }
+
+                const hours = diffMs / 3600000;
                 const newEntry = {
                     id: Date.now(),
                     start: startTime.toISOString(),
@@ -55,63 +83,147 @@
                     hours: hours,
                     pay: hours * hourlyRate
                 };
+
                 setEntries([newEntry, ...entries]);
                 setStartTime(null);
             };
 
-            const totals = useMemo(() => entries.reduce((acc, curr) => ({
-                hours: acc.hours + curr.hours,
-                pay: acc.pay + curr.pay
-            }), { hours: 0, pay: 0 }), [entries]);
+            const deleteEntry = (id) => {
+                if(confirm("Delete this log?")) setEntries(entries.filter(e => e.id !== id));
+            };
+
+            const exportCSV = () => {
+                const headers = "Date,Start,End,Hours,Pay\n";
+                const rows = entries.map(e => 
+                    `${new Date(e.start).toLocaleDateString()},${new Date(e.start).toLocaleTimeString()},${new Date(e.end).toLocaleTimeString()},${e.hours.toFixed(2)},${e.pay.toFixed(2)}`
+                ).join("\n");
+                const blob = new Blob([headers + rows], { type: 'text/csv' });
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `work-logs-${new Date().toLocaleDateString()}.csv`;
+                a.click();
+            };
+
+            // --- Stats Logic ---
+            const stats = useMemo(() => {
+                const now = new Date();
+                const todayStr = now.toLocaleDateString();
+                
+                return entries.reduce((acc, curr) => {
+                    const entryDate = new Date(curr.start);
+                    acc.totalHours += curr.hours;
+                    acc.totalPay += curr.pay;
+                    
+                    if (entryDate.toLocaleDateString() === todayStr) {
+                        acc.todayPay += curr.pay;
+                    }
+                    return acc;
+                }, { totalHours: 0, totalPay: 0, todayPay: 0 });
+            }, [entries]);
 
             return (
-                <div className="max-w-md mx-auto p-6 min-h-screen">
-                    <header className="flex justify-between items-center mb-8">
-                        <h1 className="text-2xl font-extrabold text-blue-600">TimeKeeper</h1>
-                        <div className="bg-white px-3 py-1 rounded-full shadow-sm border text-sm font-bold">
-                            £<input type="number" value={hourlyRate} onChange={(e) => setHourlyRate(e.target.value)} className="w-10 outline-none"/>/hr
-                        </div>
-                    </header>
-
-                    <div className="bg-white rounded-3xl p-8 shadow-xl mb-8 text-center border border-gray-100">
-                        {startTime ? (
-                            <div className="text-orange-500 font-bold mb-4 animate-pulse">● Working Now</div>
-                        ) : (
-                            <div className="text-gray-400 mb-4 font-medium">Ready to start?</div>
-                        )}
-                        <button 
-                            onClick={startTime ? handleClockOut : handleClockIn}
-                            className={`w-full py-5 rounded-2xl font-black text-xl shadow-lg transition-transform active:scale-95 ${startTime ? 'bg-red-500 text-white shadow-red-200' : 'bg-blue-600 text-white shadow-blue-200'}`}
-                        >
-                            {startTime ? 'CLOCK OUT' : 'CLOCK IN'}
+                <div className="max-w-md mx-auto min-h-screen pb-20">
+                    {/* Header */}
+                    <div className="sticky top-0 z-10 bg-slate-50/80 backdrop-blur-md p-4 flex justify-between items-center border-b border-slate-200">
+                        <h1 className="text-xl font-extrabold text-slate-800 flex items-center gap-2">
+                            <i className="fa-solid fa-stopwatch text-blue-600"></i> TimeKeeper
+                        </h1>
+                        <button onClick={exportCSV} className="text-blue-600 font-bold text-sm bg-blue-50 px-3 py-1.5 rounded-lg active:scale-95">
+                            <i className="fa-solid fa-file-export mr-1"></i> Export
                         </button>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-4 mb-8">
-                        <div className="bg-blue-50 p-4 rounded-2xl">
-                            <p className="text-[10px] uppercase font-bold text-blue-400">Total Hours</p>
-                            <p className="text-xl font-black text-blue-900">{totals.hours.toFixed(2)}h</p>
-                        </div>
-                        <div className="bg-green-50 p-4 rounded-2xl">
-                            <p className="text-[10px] uppercase font-bold text-green-400">Total Pay</p>
-                            <p className="text-xl font-black text-green-700">£{totals.pay.toFixed(2)}</p>
-                        </div>
-                    </div>
-
-                    <h2 className="font-bold text-gray-500 mb-4 px-1">Recent Logs</h2>
-                    <div className="space-y-3">
-                        {entries.map(e => (
-                            <div key={e.id} className="bg-white p-4 rounded-2xl shadow-sm flex justify-between items-center border border-gray-50">
-                                <div>
-                                    <p className="text-xs font-bold text-gray-400">{new Date(e.start).toLocaleDateString()}</p>
-                                    <p className="font-bold text-gray-800">{new Date(e.start).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} - {new Date(e.end).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
+                    <div className="p-4">
+                        {/* Settings Card */}
+                        <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 mb-6 flex justify-between items-center">
+                            <div className="flex items-center gap-3">
+                                <div className="bg-green-100 p-2 rounded-lg text-green-600">
+                                    <i className="fa-solid fa-pound-sign"></i>
                                 </div>
-                                <div className="text-right">
-                                    <p className="font-black text-green-600">£{e.pay.toFixed(2)}</p>
-                                    <p className="text-[10px] font-bold text-gray-300">{e.hours.toFixed(2)} hrs</p>
+                                <div>
+                                    <p className="text-[10px] uppercase font-bold text-slate-400 leading-none">Hourly Rate</p>
+                                    <input 
+                                        type="number" 
+                                        value={hourlyRate} 
+                                        onChange={(e) => setHourlyRate(parseFloat(e.target.value) || 0)}
+                                        className="text-lg font-black w-16 outline-none bg-transparent"
+                                    />
                                 </div>
                             </div>
-                        ))}
+                        </div>
+
+                        {/* Main Timer Display */}
+                        <div className="bg-white rounded-[2rem] p-8 shadow-xl shadow-blue-900/5 border border-slate-100 text-center mb-8 relative overflow-hidden">
+                            {startTime && (
+                                <div className="absolute top-4 left-0 right-0 flex justify-center">
+                                    <span className="bg-orange-100 text-orange-600 text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-widest animate-pulse">
+                                        Active Session
+                                    </span>
+                                </div>
+                            )}
+                            
+                            <div className="mt-4 mb-2 text-slate-400 text-sm font-semibold">
+                                {startTime ? `Started at ${startTime.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}` : 'System Idle'}
+                            </div>
+                            
+                            <div className="timer-font text-5xl font-bold tracking-tighter text-slate-800 mb-8">
+                                {elapsed}
+                            </div>
+
+                            <button 
+                                onClick={startTime ? handleClockOut : handleClockIn}
+                                className={`w-full py-5 rounded-2xl font-black text-lg transition-all active:scale-[0.98] shadow-lg shadow-current/20 flex items-center justify-center gap-3
+                                    ${startTime ? 'bg-rose-500 text-white' : 'bg-blue-600 text-white'}`}
+                            >
+                                <i className={`fa-solid ${startTime ? 'fa-stop' : 'fa-play'}`}></i>
+                                {startTime ? 'CLOCK OUT' : 'CLOCK IN'}
+                            </button>
+                        </div>
+
+                        {/* Summary Grid */}
+                        <div className="grid grid-cols-2 gap-3 mb-8">
+                            <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
+                                <p className="text-[10px] uppercase font-bold text-slate-400 mb-1">Today</p>
+                                <p className="text-xl font-black text-green-600">£{stats.todayPay.toFixed(2)}</p>
+                            </div>
+                            <div className="bg-slate-800 p-4 rounded-2xl shadow-sm text-white">
+                                <p className="text-[10px] uppercase font-bold text-slate-400 mb-1">Total Pay</p>
+                                <p className="text-xl font-black">£{stats.totalPay.toFixed(2)}</p>
+                            </div>
+                        </div>
+
+                        {/* Logs */}
+                        <div className="space-y-3">
+                            <h2 className="font-extrabold text-slate-800 px-1 flex items-center gap-2">
+                                <i className="fa-solid fa-list-ul text-blue-500 text-sm"></i> History
+                            </h2>
+                            {entries.length === 0 && <div className="text-center py-12 text-slate-400 text-sm italic">No work history found.</div>}
+                            {entries.map(e => (
+                                <div key={e.id} className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex justify-between items-center group active:bg-slate-50 transition-colors">
+                                    <div className="flex gap-4 items-center">
+                                        <div className="bg-slate-50 w-10 h-10 rounded-xl flex items-center justify-center text-slate-400">
+                                            <i className="fa-solid fa-calendar-day text-xs"></i>
+                                        </div>
+                                        <div>
+                                            <p className="text-[10px] font-black text-slate-400 uppercase leading-none mb-1">{new Date(e.start).toLocaleDateString('en-GB', {day:'2-digit', month:'short'})}</p>
+                                            <p className="font-bold text-slate-800 text-sm">
+                                                {new Date(e.start).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})} - {new Date(e.end).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center gap-4">
+                                        <div className="text-right">
+                                            <p className="font-black text-slate-900 leading-none mb-1">£{e.pay.toFixed(2)}</p>
+                                            <p className="text-[10px] font-bold text-slate-400 tracking-tight">{e.hours.toFixed(2)}h recorded</p>
+                                        </div>
+                                        <button onClick={() => deleteEntry(e.id)} className="text-slate-300 hover:text-rose-500 p-2">
+                                            <i className="fa-solid fa-trash-can"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
                     </div>
                 </div>
             );
