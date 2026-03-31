@@ -18,6 +18,9 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
+    
     <style>
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500&family=Plus+Jakarta+Sans:wght@400;600;800&display=swap');
         body { font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; transition: background-color 0.3s ease; }
@@ -38,7 +41,6 @@
         const { useState, useEffect, useMemo } = React;
 
         const App = () => {
-            // --- State & Storage ---
             const [entries, setEntries] = useState(() => JSON.parse(localStorage.getItem('work-entries')) || []);
             const [startTime, setStartTime] = useState(() => {
                 const saved = localStorage.getItem('active-start-time');
@@ -51,14 +53,6 @@
             const [showManual, setShowManual] = useState(false);
             const [timer, setTimer] = useState({ elapsed: "00:00:00", livePay: "0.00" });
 
-            // --- Notifications ---
-            useEffect(() => {
-                if ("Notification" in window && Notification.permission === "default") {
-                    Notification.requestPermission();
-                }
-            }, []);
-
-            // --- Persistence ---
             useEffect(() => {
                 localStorage.setItem('work-entries', JSON.stringify(entries));
                 localStorage.setItem('active-start-time', startTime ? startTime.toISOString() : '');
@@ -69,7 +63,6 @@
                 document.body.className = isDark ? 'dark' : '';
             }, [entries, startTime, isPaused, accumulatedMs, hourlyRate, isDark]);
 
-            // --- High Precision Timer ---
             useEffect(() => {
                 let interval;
                 if (startTime && !isPaused) {
@@ -84,40 +77,17 @@
                         });
                     }, 1000);
                 } else {
-                    const h = Math.floor(accumulatedMs / 3600000);
-                    const m = Math.floor((accumulatedMs % 3600000) / 60000);
-                    const s = Math.floor((accumulatedMs % 60000) / 1000);
+                    const totalMs = accumulatedMs;
+                    const h = Math.floor(totalMs / 3600000);
+                    const m = Math.floor((totalMs % 3600000) / 60000);
+                    const s = Math.floor((totalMs % 60000) / 1000);
                     setTimer({
                         elapsed: `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`,
-                        livePay: ((accumulatedMs / 3600000) * hourlyRate).toFixed(2)
+                        livePay: ((totalMs / 3600000) * hourlyRate).toFixed(2)
                     });
                 }
                 return () => clearInterval(interval);
             }, [startTime, isPaused, accumulatedMs, hourlyRate]);
-
-            // --- Actions ---
-            const handleClockOut = () => {
-                if (!confirm("Finish this session?")) return;
-                const finalMs = (startTime && !isPaused ? (new Date() - startTime) : 0) + accumulatedMs;
-                const hours = finalMs / 3600000;
-                if (hours < 0.001) { resetClock(); return; }
-                const newEntry = { id: Date.now(), start: new Date(Date.now()-finalMs).toISOString(), end: new Date().toISOString(), hours, pay: hours * hourlyRate };
-                setEntries([newEntry, ...entries]);
-                resetClock();
-            };
-
-            const resetClock = () => { setStartTime(null); setIsPaused(false); setAccumulatedMs(0); };
-
-            const addManualEntry = (e) => {
-                e.preventDefault();
-                const d = new FormData(e.target);
-                const start = new Date(`${d.get('date')}T${d.get('start')}`);
-                const end = new Date(`${d.get('date')}T${d.get('end')}`);
-                const hours = (end - start) / 3600000;
-                if (hours <= 0) return alert("End time must be after start time");
-                setEntries([{ id: Date.now(), start: start.toISOString(), end: end.toISOString(), hours, pay: hours * hourlyRate }, ...entries]);
-                setShowManual(false);
-            };
 
             const exportCSV = () => {
                 const headers = "Date,Start,End,Hours,Pay\n";
@@ -126,25 +96,49 @@
                 const a = document.createElement('a'); a.href = window.URL.createObjectURL(blob); a.download = "WorkLog.csv"; a.click();
             };
 
+            const exportPDF = () => {
+                const { jsPDF } = window.jspdf;
+                const doc = new jsPDF();
+                
+                doc.setFontSize(18);
+                doc.text("Work Session Report", 14, 22);
+                doc.setFontSize(11);
+                doc.setTextColor(100);
+                doc.text(`Generated on: ${new Date().toLocaleDateString()}`, 14, 30);
+
+                const tableColumn = ["Date", "Start", "End", "Hours", "Earnings"];
+                const tableRows = entries.map(e => [
+                    new Date(e.start).toLocaleDateString(),
+                    new Date(e.start).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}),
+                    new Date(e.end).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}),
+                    `${e.hours.toFixed(2)}h`,
+                    `£${e.pay.toFixed(2)}`
+                ]);
+
+                doc.autoTable({
+                    head: [tableColumn],
+                    body: tableRows,
+                    startY: 40,
+                    theme: 'striped',
+                    headStyles: { fillColor: [37, 99, 235] }
+                });
+
+                doc.save(`TimeKeeper_Report_${new Date().toLocaleDateString()}.pdf`);
+            };
+
             const stats = useMemo(() => {
-                const now = new Date();
-                const startOfWeek = new Date(now.setDate(now.getDate() - now.getDay()));
                 return entries.reduce((acc, curr) => {
-                    const d = new Date(curr.start);
                     acc.tH += curr.hours; acc.tP += curr.pay;
-                    if (d.toLocaleDateString() === new Date().toLocaleDateString()) { acc.dH += curr.hours; acc.dP += curr.pay; }
-                    if (d >= startOfWeek) { acc.wH += curr.hours; acc.wP += curr.pay; }
                     return acc;
-                }, { tH: 0, tP: 0, dH: 0, dP: 0, wH: 0, wP: 0 });
+                }, { tH: 0, tP: 0 });
             }, [entries]);
 
             return (
-                <div className="max-w-md mx-auto min-h-screen p-6 select-none">
-                    {/* App Bar */}
+                <div className="max-w-md mx-auto min-h-screen p-6">
                     <div className="flex justify-between items-center mb-8 pt-2">
                         <div className="flex items-center gap-3">
-                            <img src="https://img.icons8.com/fluency/96/stopwatch.png" className="w-10 h-10 shadow-lg rounded-xl" alt="App Icon" />
-                            <h1 className="text-2xl font-black tracking-tight">TimeKeeper</h1>
+                            <img src="https://img.icons8.com/fluency/96/stopwatch.png" className="w-10 h-10 shadow-lg rounded-xl" />
+                            <h1 className="text-2xl font-black">TimeKeeper</h1>
                         </div>
                         <div className="flex gap-2">
                             <button onClick={() => setIsDark(!isDark)} className="w-11 h-11 flex items-center justify-center rounded-2xl bg-white shadow-sm border border-slate-100 active:scale-90 transition-all">
@@ -156,57 +150,37 @@
                         </div>
                     </div>
 
-                    {/* Timer Hero Card */}
-                    <div className={`rounded-[2.8rem] p-10 text-center mb-8 transition-all duration-500 transform ${startTime ? 'bg-slate-900 text-white shadow-2xl scale-105' : 'bg-white border border-slate-100 shadow-xl shadow-slate-200/50'}`}>
-                        <div className="timer-font text-6xl font-black mb-2 tracking-tighter tabular-nums leading-none">{timer.elapsed}</div>
+                    <div className={`rounded-[2.8rem] p-10 text-center mb-8 transition-all duration-500 ${startTime ? 'bg-slate-900 text-white shadow-2xl scale-105' : 'bg-white border border-slate-100 shadow-xl shadow-slate-200/50'}`}>
+                        <div className="timer-font text-6xl font-black mb-2 tracking-tighter tabular-nums">{timer.elapsed}</div>
                         <div className={`text-xl font-bold mb-8 flex items-center justify-center gap-2 ${isPaused ? 'text-orange-400' : 'text-green-400'}`}>
-                            {isPaused ? <i className="fa-solid fa-pause-circle text-sm"></i> : <i className="fa-solid fa-sterling-sign text-xs animate-bounce"></i>}
-                            {isPaused ? "PAUSED" : timer.livePay}
+                            {isPaused ? "PAUSED" : `£${timer.livePay}`}
                         </div>
                         <div className="flex gap-3">
                             {!startTime ? (
-                                <button onClick={() => { setStartTime(new Date()); setIsPaused(false); setAccumulatedMs(0); }} className="w-full py-5 rounded-3xl font-black text-xl bg-blue-600 text-white shadow-lg shadow-blue-600/30 active:scale-95 transition-all">START SHIFT</button>
+                                <button onClick={() => { setStartTime(new Date()); setIsPaused(false); setAccumulatedMs(0); }} className="w-full py-5 rounded-3xl font-black text-xl bg-blue-600 text-white shadow-lg">START SHIFT</button>
                             ) : (
                                 <>
-                                    <button onClick={() => { if(isPaused){ setStartTime(new Date()); setIsPaused(false); } else { setAccumulatedMs(prev => prev + (new Date()-startTime)); setIsPaused(true); } }} className={`flex-1 py-5 rounded-3xl font-black text-lg ${isPaused ? 'bg-green-500' : 'bg-orange-500'} text-white shadow-lg active:scale-95 transition-all`}>{isPaused ? "RESUME" : "PAUSE"}</button>
-                                    <button onClick={handleClockOut} className="flex-1 py-5 rounded-3xl font-black text-lg bg-rose-500 text-white shadow-lg active:scale-95 transition-all uppercase">Finish</button>
+                                    <button onClick={() => { if(isPaused){ setStartTime(new Date()); setIsPaused(false); } else { setAccumulatedMs(prev => prev + (new Date()-startTime)); setIsPaused(true); } }} className={`flex-1 py-5 rounded-3xl font-black text-lg ${isPaused ? 'bg-green-500' : 'bg-orange-500'} text-white shadow-lg`}>{isPaused ? "RESUME" : "PAUSE"}</button>
+                                    <button onClick={() => { if(confirm("Finish?")) { const final = (startTime && !isPaused ? (new Date()-startTime) : 0) + accumulatedMs; const h = final/3600000; setEntries([{id:Date.now(), start:new Date(Date.now()-final).toISOString(), end:new Date().toISOString(), hours:h, pay:h*hourlyRate}, ...entries]); setStartTime(null); setAccumulatedMs(0); setIsPaused(false); } }} className="flex-1 py-5 rounded-3xl font-black text-lg bg-rose-500 text-white shadow-lg">FINISH</button>
                                 </>
                             )}
                         </div>
                     </div>
 
-                    {/* Stats Dashboard */}
-                    <div className="grid grid-cols-2 gap-4 mb-8">
-                        <div className="bg-white p-4 rounded-[2rem] border border-slate-100 shadow-sm col-span-2 flex justify-between items-center px-6">
-                            <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Rate Setting</span>
-                            <div className="flex items-center gap-1 font-black text-blue-600 text-lg">£<input type="number" value={hourlyRate} onChange={(e)=>setHourlyRate(parseFloat(e.target.value)||0)} className="w-12 bg-transparent outline-none border-none text-right" /></div>
-                        </div>
-                        <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm">
-                            <p className="text-[10px] font-black text-slate-400 uppercase mb-2">Today</p>
-                            <p className="text-2xl font-black">£{stats.dP.toFixed(2)}</p>
-                            <p className="text-xs font-bold text-blue-500">{stats.dH.toFixed(2)}h</p>
-                        </div>
-                        <div className="bg-blue-600 p-6 rounded-[2rem] shadow-lg shadow-blue-500/20 text-white">
-                            <p className="text-[10px] font-black text-blue-200 uppercase mb-2">Lifetime</p>
-                            <p className="text-2xl font-black">£{stats.tP.toFixed(2)}</p>
-                            <p className="text-xs font-bold text-blue-100">{stats.tH.toFixed(2)}h</p>
-                        </div>
-                    </div>
-
-                    {/* History Header */}
                     <div className="flex justify-between items-end mb-5 px-1">
                         <h2 className="text-xl font-black">Activity</h2>
-                        <button onClick={exportCSV} className="text-[11px] font-black text-blue-600 uppercase tracking-widest border-b-2 border-blue-100 pb-0.5 active:opacity-50">Export Logs</button>
+                        <div className="flex gap-3">
+                            <button onClick={exportCSV} className="text-[10px] font-black text-blue-600 uppercase tracking-widest border-b-2 border-blue-100 pb-0.5">CSV</button>
+                            <button onClick={exportPDF} className="text-[10px] font-black text-rose-600 uppercase tracking-widest border-b-2 border-rose-100 pb-0.5">PDF</button>
+                        </div>
                     </div>
 
-                    {/* History List */}
                     <div className="space-y-4">
-                        {entries.length === 0 && <div className="text-center py-12 text-slate-300 font-bold italic bg-white rounded-[2rem] border border-dashed border-slate-200">No shifts recorded yet.</div>}
                         {entries.map(e => (
-                            <div key={e.id} className="bg-white p-5 rounded-[2rem] border border-slate-50 shadow-sm flex justify-between items-center transition-all active:bg-slate-50">
+                            <div key={e.id} className="bg-white p-5 rounded-[2rem] border border-slate-50 shadow-sm flex justify-between items-center transition-all">
                                 <div className="flex items-center gap-4">
                                     <div className="bg-slate-50 h-14 w-14 rounded-2xl flex flex-col items-center justify-center text-slate-400 border border-slate-100">
-                                        <span className="text-[9px] font-black uppercase leading-none">{new Date(e.start).toLocaleDateString('en-GB',{month:'short'})}</span>
+                                        <span className="text-[9px] font-black uppercase">{new Date(e.start).toLocaleDateString('en-GB',{month:'short'})}</span>
                                         <span className="text-lg font-black text-slate-800 leading-tight">{new Date(e.start).getDate()}</span>
                                     </div>
                                     <div>
@@ -216,35 +190,28 @@
                                 </div>
                                 <div className="text-right">
                                     <p className="font-black text-green-600 text-xl">£{e.pay.toFixed(2)}</p>
-                                    <button onClick={()=>confirm("Delete this log?") && setEntries(entries.filter(x=>x.id!==e.id))} className="text-slate-200 hover:text-rose-500 mt-1 transition-colors"><i className="fa-solid fa-trash-can text-xs"></i></button>
+                                    <button onClick={()=>confirm("Delete?") && setEntries(entries.filter(x=>x.id!==e.id))} className="text-slate-200 hover:text-rose-500 mt-1"><i className="fa-solid fa-trash-can text-xs"></i></button>
                                 </div>
                             </div>
                         ))}
                     </div>
 
-                    {/* Manual Entry Modal */}
                     {showManual && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-slate-900/90 backdrop-blur-md">
-                            <div className="bg-white w-full max-w-sm rounded-[3rem] p-10 shadow-2xl animate-in zoom-in duration-200">
+                            <div className="bg-white w-full max-w-sm rounded-[3rem] p-10 shadow-2xl">
                                 <h3 className="text-2xl font-black mb-8 text-center">Manual Entry</h3>
-                                <form onSubmit={addManualEntry} className="space-y-6">
+                                <form onSubmit={(e) => { e.preventDefault(); const d = new FormData(e.target); const start = new Date(`${d.get('date')}T${d.get('start')}`); const end = new Date(`${d.get('date')}T${d.get('end')}`); const h = (end-start)/3600000; if(h<=0) return alert("Error"); setEntries([{id:Date.now(), start:start.toISOString(), end:end.toISOString(), hours:h, pay:h*hourlyRate}, ...entries]); setShowManual(false); }} className="space-y-6">
                                     <div className="space-y-2">
-                                        <label className="text-[10px] font-black uppercase text-slate-400 ml-2">Work Date</label>
+                                        <label className="text-[10px] font-black uppercase text-slate-400 ml-2">Date</label>
                                         <input type="date" name="date" required defaultValue={new Date().toISOString().split('T')[0]} />
                                     </div>
                                     <div className="grid grid-cols-2 gap-4">
-                                        <div className="space-y-2">
-                                            <label className="text-[10px] font-black uppercase text-slate-400 ml-2">Start Time</label>
-                                            <input type="time" name="start" required />
-                                        </div>
-                                        <div className="space-y-2">
-                                            <label className="text-[10px] font-black uppercase text-slate-400 ml-2">End Time</label>
-                                            <input type="time" name="end" required />
-                                        </div>
+                                        <input type="time" name="start" required />
+                                        <input type="time" name="end" required />
                                     </div>
                                     <div className="flex gap-4 pt-4">
-                                        <button type="button" onClick={()=>setShowManual(false)} className="flex-1 py-5 rounded-2xl font-black text-slate-400 bg-slate-100 uppercase text-[10px] tracking-widest">Cancel</button>
-                                        <button type="submit" className="flex-1 py-5 rounded-2xl font-black text-white bg-blue-600 uppercase text-[10px] tracking-widest shadow-lg shadow-blue-500/30">Add Log</button>
+                                        <button type="button" onClick={()=>setShowManual(false)} className="flex-1 py-5 rounded-2xl font-black text-slate-400 bg-slate-100 uppercase text-[10px]">Cancel</button>
+                                        <button type="submit" className="flex-1 py-5 rounded-2xl font-black text-white bg-blue-600 uppercase text-[10px] shadow-lg shadow-blue-500/30">Add Log</button>
                                     </div>
                                 </form>
                             </div>
