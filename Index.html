@@ -53,21 +53,7 @@
             const [showManual, setShowManual] = useState(false);
             const [timer, setTimer] = useState({ elapsed: "00:00:00", livePay: "0.00" });
 
-            // --- Auto Update Logic ---
-            useEffect(() => {
-                const checkUpdate = async () => {
-                    if (window.navigator.onLine) {
-                        // Force a refresh if the app is outdated (Service Worker logic)
-                        if ('serviceWorker' in navigator) {
-                            const registration = await navigator.serviceWorker.getRegistration();
-                            if (registration) { registration.update(); }
-                        }
-                    }
-                };
-                window.addEventListener('focus', checkUpdate);
-                return () => window.removeEventListener('focus', checkUpdate);
-            }, []);
-
+            // Persistence
             useEffect(() => {
                 localStorage.setItem('work-entries', JSON.stringify(entries));
                 localStorage.setItem('active-start-time', startTime ? startTime.toISOString() : '');
@@ -78,6 +64,7 @@
                 document.body.className = isDark ? 'dark' : '';
             }, [entries, startTime, isPaused, accumulatedMs, hourlyRate, isDark]);
 
+            // Timer Logic
             useEffect(() => {
                 let interval;
                 if (startTime && !isPaused) {
@@ -120,8 +107,38 @@
                 doc.save(`Report.pdf`);
             };
 
+            const handleManualSubmit = (e) => {
+                e.preventDefault();
+                const d = new FormData(e.target);
+                const dateStr = d.get('date');
+                const startStr = d.get('start');
+                const endStr = d.get('end');
+
+                let startDate = new Date(`${dateStr}T${startStr}`);
+                let endDate = new Date(`${dateStr}T${endStr}`);
+
+                // --- OVERNIGHT FIX ---
+                // If end time is earlier than start time, add 24 hours to end date
+                if (endDate <= startDate) {
+                    endDate.setDate(endDate.getDate() + 1);
+                }
+
+                const diffMs = endDate - startDate;
+                const h = diffMs / 3600000;
+
+                setEntries([{
+                    id: Date.now(),
+                    start: startDate.toISOString(),
+                    end: endDate.toISOString(),
+                    hours: h,
+                    pay: h * hourlyRate
+                }, ...entries]);
+                setShowManual(false);
+            };
+
             return (
                 <div className="max-w-md mx-auto min-h-screen p-6 select-none">
+                    {/* Header */}
                     <div className="flex justify-between items-center mb-8 pt-2">
                         <div className="flex items-center gap-3">
                             <img src="https://img.icons8.com/fluency/96/stopwatch.png" className="w-10 h-10 shadow-lg rounded-xl" />
@@ -137,6 +154,7 @@
                         </div>
                     </div>
 
+                    {/* Main Timer Display */}
                     <div className={`rounded-[2.8rem] p-10 text-center mb-8 transition-all duration-500 ${startTime ? 'bg-slate-900 text-white shadow-2xl scale-105' : 'bg-white border border-slate-100 shadow-xl shadow-slate-200/50'}`}>
                         <div className="timer-font text-6xl font-black mb-2 tracking-tighter tabular-nums">{timer.elapsed}</div>
                         <div className={`text-xl font-bold mb-8 flex items-center justify-center gap-2 ${isPaused ? 'text-orange-400' : 'text-green-400'}`}>
@@ -154,11 +172,10 @@
                         </div>
                     </div>
 
+                    {/* History Section */}
                     <div className="flex justify-between items-center mb-6 px-1">
                         <h2 className="text-xl font-black">History</h2>
-                        <div className="flex gap-3">
-                            <button onClick={exportPDF} className="text-[10px] font-black text-rose-600 uppercase tracking-widest border-b-2 border-rose-100 pb-0.5">PDF Report</button>
-                        </div>
+                        <button onClick={exportPDF} className="text-[10px] font-black text-rose-600 uppercase tracking-widest border-b-2 border-rose-100 pb-0.5">PDF Report</button>
                     </div>
 
                     <div className="space-y-4">
@@ -182,11 +199,12 @@
                         ))}
                     </div>
 
+                    {/* Manual Entry Modal */}
                     {showManual && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-slate-900/90 backdrop-blur-md">
                             <div className="bg-white w-full max-w-sm rounded-[3rem] p-10 shadow-2xl">
                                 <h3 className="text-2xl font-black mb-8 text-center text-slate-900">Manual Entry</h3>
-                                <form onSubmit={(e) => { e.preventDefault(); const d = new FormData(e.target); const start = new Date(`${d.get('date')}T${d.get('start')}`); const end = new Date(`${d.get('date')}T${d.get('end')}`); const h = (end-start)/3600000; if(h<=0) return alert("Error: End time must be after start time"); setEntries([{id:Date.now(), start:start.toISOString(), end:end.toISOString(), hours:h, pay:h*hourlyRate}, ...entries]); setShowManual(false); }} className="space-y-6">
+                                <form onSubmit={handleManualSubmit} className="space-y-6">
                                     <div className="space-y-2">
                                         <label className="text-[10px] font-black uppercase text-slate-400 ml-2">Select Date</label>
                                         <input type="date" name="date" required defaultValue={new Date().toISOString().split('T')[0]} />
