@@ -3,8 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>TimeKeeper Elite</title>
+    <title>TimeKeeper Elite Pro</title>
     
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#2563eb">
+
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -14,7 +18,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
     
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&family=JetBrains+Mono:wght@600&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=JetBrains+Mono:wght@600&display=swap');
         body { font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; transition: background-color 0.4s; overscroll-behavior-y: contain; }
         .timer-font { font-family: 'JetBrains Mono', monospace; }
         .glass { background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.3); }
@@ -22,8 +26,10 @@
         .dark .glass { background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255, 255, 255, 0.05); }
         .tap-bounce { transition: transform 0.1s; }
         .tap-bounce:active { transform: scale(0.95); }
-        input, select { background: transparent; border: 1.5px solid #e2e8f0; border-radius: 1rem; padding: 0.75rem; width: 100%; color: inherit; }
-        .dark input, .dark select { border-color: #334155; }
+        input { background: transparent; border: 1.5px solid #e2e8f0; border-radius: 1rem; padding: 0.75rem; width: 100%; color: inherit; }
+        .dark input { border-color: #334155; }
+        .date-tile { background-color: #f1f5f9 !important; color: #0f172a !important; }
+        .dark .date-tile { background-color: #1e293b !important; color: #ffffff !important; }
     </style>
 </head>
 <body class="bg-slate-50">
@@ -32,19 +38,17 @@
     <script type="text/babel">
         const { useState, useEffect, useMemo } = React;
 
-        // --- STABLE INPUT COMPONENT (Fixes Keyboard Glitch) ---
+        // FIXED: Isolated component to prevent keyboard from closing
         const HourlyRateInput = ({ initialRate, onSave }) => {
             const [localValue, setLocalValue] = useState(initialRate);
             useEffect(() => setLocalValue(initialRate), [initialRate]);
             return (
                 <div className="flex items-center gap-1 font-black text-blue-600" onClick={e => e.stopPropagation()}>
                     <span>£</span>
-                    <input 
-                        type="number" step="0.01" inputMode="decimal"
-                        value={localValue} 
+                    <input type="number" step="0.01" inputMode="decimal" value={localValue} 
                         onChange={e => setLocalValue(e.target.value)}
                         onBlur={() => onSave(parseFloat(localValue) || 0)}
-                        className="w-16 border-none text-right p-0 bg-transparent focus:ring-0"
+                        className="w-16 border-none text-right p-0 bg-transparent focus:ring-0 font-bold"
                     />
                 </div>
             );
@@ -59,14 +63,7 @@
             const [hourlyRate, setHourlyRate] = useState(() => parseFloat(localStorage.getItem('hourly-rate')) || 6.00);
             const [isDark, setIsDark] = useState(() => JSON.parse(localStorage.getItem('dark-mode')) || false);
             const [timer, setTimer] = useState({ elapsed: "00:00:00", livePay: "0.00" });
-            
-            // PDF State
             const [reportMonth, setReportMonth] = useState(new Date().toISOString().slice(0, 7));
-
-            // --- SORTING ENGINE (Newest First) ---
-            const sortedEntries = useMemo(() => {
-                return [...entries].sort((a, b) => new Date(b.start) - new Date(a.start));
-            }, [entries]);
 
             useEffect(() => {
                 localStorage.setItem('work-entries', JSON.stringify(entries));
@@ -78,7 +75,25 @@
                 document.body.className = isDark ? 'dark' : '';
             }, [entries, startTime, isPaused, accumulatedMs, hourlyRate, isDark]);
 
-            // Timer Loop
+            // --- CALCULATIONS & SORTING ---
+            const sortedEntries = useMemo(() => [...entries].sort((a, b) => new Date(b.start) - new Date(a.start)), [entries]);
+
+            const stats = useMemo(() => {
+                const now = new Date();
+                const todayStr = now.toLocaleDateString();
+                const weekLimit = new Date(); weekLimit.setDate(now.getDate() - 7);
+                const monthLimit = new Date(); monthLimit.setDate(now.getDate() - 30);
+
+                return {
+                    daily: entries.filter(e => new Date(e.start).toLocaleDateString() === todayStr).reduce((a, b) => a + b.pay, 0),
+                    weekly: entries.filter(e => new Date(e.start) >= weekLimit).reduce((a, b) => a + b.pay, 0),
+                    monthly: entries.filter(e => new Date(e.start) >= monthLimit).reduce((a, b) => a + b.pay, 0),
+                    totalEarnings: entries.reduce((a, b) => a + b.pay, 0),
+                    totalHours: entries.reduce((a, b) => a + b.hours, 0)
+                };
+            }, [entries]);
+
+            // Timer Tick
             useEffect(() => {
                 let interval;
                 if (startTime && !isPaused) {
@@ -92,35 +107,54 @@
                             livePay: ((totalMs / 3600000) * hourlyRate).toFixed(2)
                         });
                     }, 1000);
+                } else {
+                    const totalMs = accumulatedMs;
+                    const h = Math.floor(totalMs / 3600000);
+                    const m = Math.floor((totalMs % 3600000) / 60000);
+                    setTimer({
+                        elapsed: `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00`,
+                        livePay: ((totalMs / 3600000) * hourlyRate).toFixed(2)
+                    });
                 }
                 return () => clearInterval(interval);
             }, [startTime, isPaused, accumulatedMs, hourlyRate]);
 
-            const generateMonthlyPDF = () => {
+            const handleFinish = () => {
+                if(!confirm("Finish and save this session?")) return;
+                const sessionMs = (startTime && !isPaused ? (new Date() - startTime) : 0) + accumulatedMs;
+                const hours = sessionMs / 3600000;
+                if(hours > 0.001) {
+                    const newEntry = {
+                        id: Date.now(),
+                        start: new Date(Date.now() - sessionMs).toISOString(),
+                        end: new Date().toISOString(),
+                        hours: hours,
+                        pay: hours * hourlyRate
+                    };
+                    setEntries([newEntry, ...entries]);
+                }
+                setStartTime(null); setAccumulatedMs(0); setIsPaused(false);
+            };
+
+            const generatePDF = () => {
                 const [year, month] = reportMonth.split('-');
                 const monthName = new Date(year, month - 1).toLocaleString('default', { month: 'long' });
-                
                 const filtered = sortedEntries.filter(e => {
                     const d = new Date(e.start);
                     return d.getFullYear() === parseInt(year) && (d.getMonth() + 1) === parseInt(month);
                 });
 
-                const totalH = filtered.reduce((a, b) => a + b.hours, 0);
-                const totalP = filtered.reduce((a, b) => a + b.pay, 0);
+                const tH = filtered.reduce((a, b) => a + b.hours, 0);
+                const tP = filtered.reduce((a, b) => a + b.pay, 0);
 
                 const { jsPDF } = window.jspdf;
                 const doc = new jsPDF();
-
-                // Header
-                doc.setFontSize(22); doc.setTextColor(37, 99, 235);
-                doc.text("TimeKeeper", 14, 20);
-                doc.setFontSize(12); doc.setTextColor(100);
-                doc.text(`Monthly Earnings Report: ${monthName} ${year}`, 14, 28);
-
-                // Table
+                doc.setFontSize(22); doc.setTextColor(37, 99, 235); doc.text("TimeKeeper", 14, 20);
+                doc.setFontSize(11); doc.setTextColor(100); doc.text(`Earnings Report: ${monthName} ${year}`, 14, 28);
+                
                 doc.autoTable({
                     startY: 35,
-                    head: [['Date', 'Start', 'End', 'Duration', 'Earnings']],
+                    head: [['Date', 'In', 'Out', 'Duration', 'Pay']],
                     body: filtered.map(e => [
                         new Date(e.start).toLocaleDateString('en-GB'),
                         new Date(e.start).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}),
@@ -128,90 +162,134 @@
                         `${Math.floor(e.hours)}h ${Math.round((e.hours % 1) * 60)}m`,
                         `£${e.pay.toFixed(2)}`
                     ]),
-                    headStyles: { fillColor: [37, 99, 235] },
-                    alternateRowStyles: { fillColor: [245, 247, 250] }
+                    headStyles: { fillColor: [37, 99, 235] }
                 });
 
-                // Summary
                 const finalY = doc.lastAutoTable.finalY + 15;
-                doc.setFontSize(14); doc.setTextColor(0);
-                doc.text(`Total Hours: ${totalH.toFixed(2)}h`, 14, finalY);
-                doc.text(`Total Earnings: £${totalP.toFixed(2)}`, 14, finalY + 8);
-
+                doc.setFontSize(12); doc.setTextColor(0);
+                doc.text(`Total Monthly Hours: ${tH.toFixed(2)}h`, 14, finalY);
+                doc.text(`Total Monthly Earnings: £${tP.toFixed(2)}`, 14, finalY + 7);
                 doc.save(`TimeKeeper_${monthName}_${year}.pdf`);
             };
 
             return (
                 <div className="max-w-md mx-auto min-h-screen p-6 pb-24">
                     <header className="flex justify-between items-center mb-8">
-                        <h1 className="text-xl font-black tracking-tight">TimeKeeper</h1>
-                        <button onClick={() => setView(view === 'dashboard' ? 'settings' : 'dashboard')} className="w-12 h-12 glass rounded-2xl flex items-center justify-center">
+                        <div className="flex items-center gap-2">
+                            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white shadow-lg shadow-blue-500/20"><i className="fa-solid fa-stopwatch"></i></div>
+                            <h1 className="text-xl font-black tracking-tight">TimeKeeper</h1>
+                        </div>
+                        <button onClick={() => setView(view === 'dashboard' ? 'settings' : 'dashboard')} className="w-12 h-12 glass rounded-2xl flex items-center justify-center tap-bounce shadow-sm">
                             <i className={`fa-solid ${view === 'dashboard' ? 'fa-gear' : 'fa-house'} text-slate-400`}></i>
                         </button>
                     </header>
 
                     {view === 'dashboard' ? (
                         <div className="animate-in fade-in duration-500">
-                            <section className="glass rounded-[2.5rem] p-8 mb-8 text-center shadow-xl">
-                                <p className="text-[10px] font-black uppercase text-blue-500 tracking-widest mb-2">Active Session</p>
-                                <div className="timer-font text-6xl font-bold mb-4">{timer.elapsed}</div>
-                                <div className="text-2xl font-black mb-8">£{timer.livePay}</div>
+                            {/* Main Timer Card */}
+                            <section className={`rounded-[2.5rem] p-8 mb-6 transition-all duration-500 ${startTime && !isPaused ? 'bg-slate-900 text-white shadow-2xl scale-[1.02]' : 'glass shadow-xl'}`}>
+                                <div className="text-center">
+                                    <p className="text-[10px] font-black uppercase text-blue-500 tracking-widest mb-2">Live Session</p>
+                                    <div className="timer-font text-6xl font-bold mb-4 tracking-tighter tabular-nums">{timer.elapsed}</div>
+                                    <div className="text-2xl font-black mb-8 opacity-90">£{timer.livePay}</div>
+                                </div>
                                 <div className="flex gap-3">
                                     {!startTime ? (
-                                        <button onClick={() => setStartTime(new Date())} className="w-full py-5 bg-blue-600 text-white rounded-3xl font-bold tap-bounce">Start Shift</button>
+                                        <button onClick={() => setStartTime(new Date())} className="w-full py-5 bg-blue-600 text-white rounded-3xl font-bold text-lg tap-bounce shadow-lg shadow-blue-500/30">Start Shift</button>
                                     ) : (
-                                        <button onClick={() => {
-                                            const finalMs = (new Date() - startTime) + accumulatedMs;
-                                            const h = finalMs / 3600000;
-                                            setEntries([{ id: Date.now(), start: new Date(Date.now()-finalMs).toISOString(), end: new Date().toISOString(), hours: h, pay: h * hourlyRate }, ...entries]);
-                                            setStartTime(null); setAccumulatedMs(0); setIsPaused(false);
-                                        }} className="w-full py-5 bg-rose-500 text-white rounded-3xl font-bold tap-bounce">Finish & Save</button>
+                                        <>
+                                            <button onClick={() => {
+                                                if(isPaused) { setStartTime(new Date()); setIsPaused(false); }
+                                                else { setAccumulatedMs(prev => prev + (new Date() - startTime)); setIsPaused(true); }
+                                            }} className="flex-1 py-5 bg-slate-800 text-white rounded-3xl font-bold tap-bounce">{isPaused ? "Resume" : "Pause"}</button>
+                                            <button onClick={handleFinish} className="flex-1 py-5 bg-rose-500 text-white rounded-3xl font-bold tap-bounce">Finish</button>
+                                        </>
                                     )}
                                 </div>
                             </section>
 
+                            {/* Stats Grid */}
+                            <div className="grid grid-cols-3 gap-3 mb-8">
+                                <div className="glass p-4 rounded-3xl text-center shadow-sm">
+                                    <p className="text-[8px] font-black text-slate-400 uppercase mb-1">Today</p>
+                                    <p className="text-sm font-black">£{stats.daily.toFixed(2)}</p>
+                                </div>
+                                <div className="glass p-4 rounded-3xl text-center shadow-sm">
+                                    <p className="text-[8px] font-black text-slate-400 uppercase mb-1">Weekly</p>
+                                    <p className="text-sm font-black">£{stats.weekly.toFixed(2)}</p>
+                                </div>
+                                <div className="glass p-4 rounded-3xl text-center shadow-sm">
+                                    <p className="text-[8px] font-black text-slate-400 uppercase mb-1">Monthly</p>
+                                    <p className="text-sm font-black">£{stats.monthly.toFixed(2)}</p>
+                                </div>
+                            </div>
+
+                            <div className="flex justify-between items-end mb-6 px-2">
+                                <h2 className="text-xl font-black">History</h2>
+                                <div className="text-right">
+                                    <p className="text-[9px] font-black text-slate-400 uppercase">Lifetime Earnings</p>
+                                    <p className="font-bold text-blue-600">£{stats.totalEarnings.toFixed(2)}</p>
+                                </div>
+                            </div>
+
+                            {/* Session List (Sorted) */}
                             <div className="space-y-4">
                                 {sortedEntries.map(e => (
-                                    <div key={e.id} className="glass p-5 rounded-[2rem] flex justify-between items-center">
+                                    <div key={e.id} className="glass p-5 rounded-[2rem] flex justify-between items-center shadow-sm">
                                         <div className="flex items-center gap-4">
-                                            <div className="bg-slate-100 dark:bg-slate-800 h-12 w-12 rounded-xl flex flex-col items-center justify-center">
-                                                <span className="text-[8px] font-bold uppercase opacity-50">{new Date(e.start).toLocaleString('default', {month:'short'})}</span>
-                                                <span className="text-lg font-black">{new Date(e.start).getDate()}</span>
+                                            <div className="date-tile h-12 w-12 rounded-xl flex flex-col items-center justify-center shadow-sm border border-white/20">
+                                                <span className="text-[8px] font-black uppercase leading-none opacity-60">{new Date(e.start).toLocaleString('default', {month:'short'})}</span>
+                                                <span className="text-lg font-black leading-none">{new Date(e.start).getDate()}</span>
                                             </div>
                                             <div>
-                                                <p className="text-[10px] font-bold text-slate-400 uppercase">Duration</p>
-                                                <p className="font-black">{e.hours.toFixed(2)}h</p>
+                                                <p className="text-[10px] font-bold text-slate-400 uppercase leading-none mb-1">{new Date(e.start).getHours()}:{String(new Date(e.start).getMinutes()).padStart(2,'0')}</p>
+                                                <p className="font-black text-base">{e.hours.toFixed(2)}h</p>
                                             </div>
                                         </div>
-                                        <p className="text-emerald-500 font-black text-xl">£{e.pay.toFixed(2)}</p>
+                                        <div className="text-right">
+                                            <p className="text-emerald-500 font-black text-xl leading-none mb-1">£{e.pay.toFixed(2)}</p>
+                                            <button onClick={() => confirm("Delete entry?") && setEntries(entries.filter(x=>x.id!==e.id))} className="text-slate-300 text-xs hover:text-rose-500 transition-colors">
+                                                <i className="fa-solid fa-trash-can"></i>
+                                            </button>
+                                        </div>
                                     </div>
                                 ))}
+                                {entries.length === 0 && <p className="text-center text-slate-400 py-10 font-medium">No work history yet.</p>}
                             </div>
                         </div>
                     ) : (
                         <div className="animate-in slide-in-from-bottom duration-500 space-y-6">
-                            <div className="glass p-6 rounded-[2rem]">
-                                <p className="text-[10px] font-black uppercase text-slate-400 mb-4">Preferences</p>
+                            {/* Settings Card */}
+                            <div className="glass p-6 rounded-[2.5rem] shadow-sm">
+                                <p className="text-[10px] font-black uppercase text-slate-400 mb-6 tracking-widest">General Preferences</p>
                                 <div className="flex justify-between items-center mb-6">
                                     <span className="font-bold">Hourly Rate</span>
                                     <HourlyRateInput initialRate={hourlyRate} onSave={setHourlyRate} />
                                 </div>
                                 <div className="flex justify-between items-center">
-                                    <span className="font-bold">Dark Mode</span>
-                                    <button onClick={() => setIsDark(!isDark)} className={`w-12 h-6 rounded-full relative transition-colors ${isDark ? 'bg-blue-600' : 'bg-slate-200'}`}>
-                                        <div className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${isDark ? 'translate-x-6' : ''}`} />
+                                    <span className="font-bold">Dark Appearance</span>
+                                    <button onClick={() => setIsDark(!isDark)} className={`w-12 h-6 rounded-full relative transition-colors duration-300 ${isDark ? 'bg-blue-600' : 'bg-slate-200'}`}>
+                                        <div className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform duration-300 ${isDark ? 'translate-x-6' : ''}`} />
                                     </button>
                                 </div>
                             </div>
 
-                            <div className="glass p-6 rounded-[2rem]">
-                                <p className="text-[10px] font-black uppercase text-slate-400 mb-4">Monthly Report</p>
+                            {/* PDF Report Card */}
+                            <div className="glass p-6 rounded-[2.5rem] shadow-sm">
+                                <p className="text-[10px] font-black uppercase text-slate-400 mb-4 tracking-widest">Generate Monthly Report</p>
                                 <div className="space-y-4">
                                     <input type="month" value={reportMonth} onChange={e => setReportMonth(e.target.value)} />
-                                    <button onClick={generateMonthlyPDF} className="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold flex items-center justify-center gap-2">
+                                    <button onClick={generatePDF} className="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold flex items-center justify-center gap-2 tap-bounce shadow-lg shadow-blue-500/20">
                                         <i className="fa-solid fa-file-pdf"></i> Download PDF
                                     </button>
                                 </div>
+                            </div>
+
+                            <div className="px-2 pt-4">
+                                <button onClick={() => { if(confirm("Permanently clear all data?")) { setEntries([]); localStorage.clear(); window.location.reload(); }}} className="w-full py-4 bg-rose-50 text-rose-600 dark:bg-rose-950/20 rounded-2xl font-bold text-xs uppercase tracking-widest tap-bounce">
+                                    Factory Reset App
+                                </button>
+                                <p className="text-center text-[10px] text-slate-400 mt-6 font-medium">TimeKeeper v2.1 • Created for Excellence</p>
                             </div>
                         </div>
                     )}
