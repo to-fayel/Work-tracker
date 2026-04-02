@@ -3,12 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>TimeKeeper Chrono</title>
+    <title>TimeKeeper Pro</title>
     
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="theme-color" content="#2563eb">
-
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -19,43 +15,53 @@
     
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=JetBrains+Mono:wght@600&display=swap');
-        body { font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; transition: background-color 0.4s; overscroll-behavior-y: contain; }
+        body { font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; }
         .timer-font { font-family: 'JetBrains Mono', monospace; }
         .glass { background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.3); }
         .dark { background-color: #020617; color: #f8fafc; }
-        .dark .bg-white, .dark .modal-bg { background-color: #0f172a; color: white; }
+        .dark .modal-bg { background-color: #0f172a; color: white; }
         .dark .glass { background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255, 255, 255, 0.05); }
-        .tap-bounce { transition: transform 0.1s; }
-        .tap-bounce:active { transform: scale(0.95); }
-        input { background: transparent; border: 1.5px solid #e2e8f0; border-radius: 1rem; padding: 0.75rem; width: 100%; color: inherit; }
-        .dark input { border-color: #334155; }
-        .date-tile { background-color: #f1f5f9 !important; color: #0f172a !important; }
-        .dark .date-tile { background-color: #1e293b !important; color: #ffffff !important; }
+        .tap-bounce:active { transform: scale(0.95); transition: 0.1s; }
     </style>
 </head>
-<body class="bg-slate-50">
+<body class="bg-slate-50 transition-colors duration-400">
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useMemo } = React;
+        const { useState, useEffect, useMemo, memo, useCallback } = React;
 
-        // Stable Input Component (Fixed Keyboard Issue)
-        const HourlyRateInput = ({ initialRate, onSave }) => {
-            const [localValue, setLocalValue] = useState(initialRate);
-            useEffect(() => setLocalValue(initialRate), [initialRate]);
-            return (
-                <div className="flex items-center gap-1 font-black text-blue-600" onClick={e => e.stopPropagation()}>
-                    <span>£</span>
-                    <input type="number" step="0.01" inputMode="decimal" value={localValue} 
-                        onChange={e => setLocalValue(e.target.value)}
-                        onBlur={() => onSave(parseFloat(localValue) || 0)}
-                        className="w-16 border-none text-right p-0 bg-transparent focus:ring-0 font-bold"
-                    />
+        // --- 1. MEMOIZED UI COMPONENTS ---
+
+        const StatCard = memo(({ label, value }) => (
+            <div className="glass p-3 rounded-2xl shadow-sm text-center">
+                <p className="text-[8px] uppercase font-bold text-slate-400 mb-1">{label}</p>
+                <p className="font-bold text-sm">£{value}</p>
+            </div>
+        ));
+
+        const HistoryEntry = memo(({ entry, onEdit, onDelete }) => (
+            <div className="glass p-5 rounded-[2rem] flex justify-between items-center tap-bounce shadow-sm">
+                <div className="flex items-center gap-4">
+                    <div className="bg-slate-100 dark:bg-slate-800 h-12 w-12 rounded-xl flex flex-col items-center justify-center font-bold">
+                        <span className="text-[8px] uppercase opacity-60 mb-1">{new Date(entry.start).toLocaleString('default',{month:'short'})}</span>
+                        <span>{new Date(entry.start).getDate()}</span>
+                    </div>
+                    <div>
+                        <p className="font-black">{entry.hours.toFixed(2)}h</p>
+                        <p className="text-[10px] text-slate-400 font-bold uppercase">£{entry.pay.toFixed(2)}</p>
+                    </div>
                 </div>
-            );
-        };
+                <div className="flex gap-4 text-slate-300">
+                    <button onClick={() => onEdit(entry)} className="hover:text-blue-500"><i className="fa-solid fa-pen-to-square"></i></button>
+                    <button onClick={() => onDelete(entry.id)} className="hover:text-rose-500"><i className="fa-solid fa-trash-can"></i></button>
+                </div>
+            </div>
+        ));
+
+        // --- 2. LOGIC COMPONENTS ---
 
         const App = () => {
+            // Persistent State
             const [view, setView] = useState('dashboard');
             const [entries, setEntries] = useState(() => JSON.parse(localStorage.getItem('work-entries')) || []);
             const [startTime, setStartTime] = useState(() => localStorage.getItem('active-start-time') ? new Date(localStorage.getItem('active-start-time')) : null);
@@ -63,10 +69,14 @@
             const [accumulatedMs, setAccumulatedMs] = useState(() => JSON.parse(localStorage.getItem('accumulated-ms')) || 0);
             const [hourlyRate, setHourlyRate] = useState(() => parseFloat(localStorage.getItem('hourly-rate')) || 6.00);
             const [isDark, setIsDark] = useState(() => JSON.parse(localStorage.getItem('dark-mode')) || false);
+            
+            // Temporary State
             const [timer, setTimer] = useState({ elapsed: "00:00:00", livePay: "0.00" });
-            const [reportMonth, setReportMonth] = useState(new Date().toISOString().slice(0, 7));
             const [editingEntry, setEditingEntry] = useState(null);
+            const [reportMonth, setReportMonth] = useState(new Date().toISOString().slice(0, 7));
+            const [collapsedMonths, setCollapsedMonths] = useState({});
 
+            // Effect: Global Sync
             useEffect(() => {
                 localStorage.setItem('work-entries', JSON.stringify(entries));
                 localStorage.setItem('active-start-time', startTime ? startTime.toISOString() : '');
@@ -77,21 +87,25 @@
                 document.body.className = isDark ? 'dark' : '';
             }, [entries, startTime, isPaused, accumulatedMs, hourlyRate, isDark]);
 
-            // UPDATED: Sorting to Oldest-First (A - B)
-            const sortedEntries = useMemo(() => [...entries].sort((a, b) => new Date(a.start) - new Date(b.start)), [entries]);
+            // Memoized Calculations (Performance)
+            const groupedEntries = useMemo(() => {
+                const sorted = [...entries].sort((a, b) => new Date(a.start) - new Date(b.start));
+                return sorted.reduce((groups, entry) => {
+                    const monthKey = new Date(entry.start).toLocaleString('default', { month: 'long', year: 'numeric' });
+                    if (!groups[monthKey]) groups[monthKey] = [];
+                    groups[monthKey].push(entry);
+                    return groups;
+                }, {});
+            }, [entries]);
 
             const stats = useMemo(() => {
                 const now = new Date();
-                const todayStr = now.toLocaleDateString();
-                const weekLimit = new Date(); weekLimit.setDate(now.getDate() - 7);
-                const monthLimit = new Date(); monthLimit.setDate(now.getDate() - 30);
-                return {
-                    daily: entries.filter(e => new Date(e.start).toLocaleDateString() === todayStr).reduce((a, b) => a + b.pay, 0),
-                    weekly: entries.filter(e => new Date(e.start) >= weekLimit).reduce((a, b) => a + b.pay, 0),
-                    monthly: entries.filter(e => new Date(e.start) >= monthLimit).reduce((a, b) => a + b.pay, 0)
-                };
+                const day = entries.filter(e => new Date(e.start).toDateString() === now.toDateString()).reduce((a, b) => a + b.pay, 0);
+                const month = entries.filter(e => new Date(e.start).getMonth() === now.getMonth()).reduce((a, b) => a + b.pay, 0);
+                return { day: day.toFixed(2), month: month.toFixed(2), total: entries.reduce((a, b) => a + b.pay, 0).toFixed(2) };
             }, [entries]);
 
+            // Timer Loop
             useEffect(() => {
                 let interval;
                 if (startTime && !isPaused) {
@@ -105,66 +119,50 @@
                             livePay: ((totalMs / 3600000) * hourlyRate).toFixed(2)
                         });
                     }, 1000);
-                } else {
-                    const totalMs = accumulatedMs;
-                    const h = Math.floor(totalMs / 3600000);
-                    const m = Math.floor((totalMs % 3600000) / 60000);
-                    setTimer({ elapsed: `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00`, livePay: ((totalMs / 3600000) * hourlyRate).toFixed(2) });
                 }
                 return () => clearInterval(interval);
             }, [startTime, isPaused, accumulatedMs, hourlyRate]);
 
-            const handleManualSubmit = (e) => {
-                e.preventDefault();
-                const d = new FormData(e.target);
-                const rate = parseFloat(d.get('rate')) || hourlyRate;
-                let start = new Date(`${d.get('date')}T${d.get('start')}`);
-                let end = new Date(`${d.get('date')}T${d.get('end')}`);
-                if (end <= start) end.setDate(end.getDate() + 1);
-                const h = (end - start) / 3600000;
-                const entry = { id: editingEntry.id, start: start.toISOString(), end: end.toISOString(), hours: h, pay: h * rate };
-                setEntries(entries.map(ent => ent.id === editingEntry.id ? entry : ent));
-                setEditingEntry(null);
-            };
+            // Callbacks
+            const deleteEntry = useCallback((id) => {
+                if(confirm("Delete this session?")) setEntries(prev => prev.filter(e => e.id !== id));
+            }, []);
 
-            const generatePDF = () => {
-                const [year, month] = reportMonth.split('-');
-                const monthName = new Date(year, month - 1).toLocaleString('default', { month: 'long' });
-                const filtered = sortedEntries.filter(e => {
-                    const d = new Date(e.start);
-                    return d.getFullYear() === parseInt(year) && (d.getMonth() + 1) === parseInt(month);
-                });
-                const tH = filtered.reduce((a, b) => a + b.hours, 0);
-                const tP = filtered.reduce((a, b) => a + b.pay, 0);
-                const { jsPDF } = window.jspdf;
-                const doc = new jsPDF();
-                doc.setFontSize(22); doc.setTextColor(37, 99, 235); doc.text("TimeKeeper", 14, 20);
-                doc.setFontSize(12); doc.setTextColor(100); doc.text(`${monthName} ${year} Report`, 14, 28);
-                doc.autoTable({
-                    startY: 35,
-                    head: [['Date', 'Start', 'End', 'Duration', 'Earnings']],
-                    body: filtered.map(e => [new Date(e.start).toLocaleDateString('en-GB'), new Date(e.start).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}), new Date(e.end).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}), `${Math.floor(e.hours)}h ${Math.round((e.hours%1)*60)}m`, `£${e.pay.toFixed(2)}`]),
-                    headStyles: { fillColor: [37, 99, 235] }
-                });
-                doc.text(`Total Hours: ${tH.toFixed(2)}h`, 14, doc.lastAutoTable.finalY + 15);
-                doc.text(`Total Earnings: £${tP.toFixed(2)}`, 14, doc.lastAutoTable.finalY + 23);
-                doc.save(`TimeKeeper_${monthName}.pdf`);
+            const finishShift = () => {
+                if(!confirm("Finish and save shift?")) return;
+                const totalMs = (startTime && !isPaused ? (new Date() - startTime) : 0) + accumulatedMs;
+                const hours = totalMs / 3600000;
+                if(hours > 0.01) {
+                    setEntries(prev => [...prev, {
+                        id: Date.now(),
+                        start: new Date(Date.now() - totalMs).toISOString(),
+                        end: new Date().toISOString(),
+                        hours,
+                        pay: hours * hourlyRate
+                    }]);
+                }
+                setStartTime(null); setAccumulatedMs(0); setIsPaused(false);
             };
 
             return (
                 <div className="max-w-md mx-auto min-h-screen p-6 pb-24">
                     <header className="flex justify-between items-center mb-8">
-                        <h1 className="text-xl font-black">TimeKeeper</h1>
-                        <button onClick={() => setView(view === 'dashboard' ? 'settings' : 'dashboard')} className="w-12 h-12 glass rounded-2xl flex items-center justify-center tap-bounce">
+                        <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-blue-500/30">
+                                <i className="fa-solid fa-stopwatch text-xl"></i>
+                            </div>
+                            <h1 className="text-2xl font-black tracking-tight">TimeKeeper</h1>
+                        </div>
+                        <button onClick={() => setView(v => v === 'dashboard' ? 'settings' : 'dashboard')} className="w-12 h-12 glass rounded-2xl flex items-center justify-center tap-bounce">
                             <i className={`fa-solid ${view === 'dashboard' ? 'fa-gear' : 'fa-house'} text-slate-400`}></i>
                         </button>
                     </header>
 
                     {view === 'dashboard' ? (
-                        <div className="animate-in fade-in duration-500">
-                            <section className={`rounded-[2.5rem] p-8 mb-6 transition-all ${startTime && !isPaused ? 'bg-slate-900 text-white shadow-2xl' : 'glass shadow-xl'}`}>
+                        <div className="space-y-6">
+                            <section className={`rounded-[2.5rem] p-8 transition-all ${startTime && !isPaused ? 'bg-slate-900 text-white shadow-2xl' : 'glass shadow-xl'}`}>
                                 <div className="text-center">
-                                    <div className="timer-font text-6xl font-bold mb-4">{timer.elapsed}</div>
+                                    <div className="timer-font text-6xl font-bold mb-4 tabular-nums">{timer.elapsed}</div>
                                     <div className="text-2xl font-black mb-8">£{timer.livePay}</div>
                                 </div>
                                 <div className="flex gap-3">
@@ -174,76 +172,76 @@
                                         <>
                                             <button onClick={() => {
                                                 if(isPaused) { setStartTime(new Date()); setIsPaused(false); }
-                                                else { setAccumulatedMs(prev => prev + (new Date() - startTime)); setIsPaused(true); }
+                                                else { setAccumulatedMs(m => m + (new Date() - startTime)); setIsPaused(true); }
                                             }} className="flex-1 py-5 bg-slate-800 text-white rounded-3xl font-bold tap-bounce">{isPaused ? "Resume" : "Pause"}</button>
-                                            <button onClick={() => {
-                                                const ms = (startTime && !isPaused ? (new Date() - startTime) : 0) + accumulatedMs;
-                                                const h = ms / 3600000;
-                                                if(h > 0.01) setEntries([...entries, { id: Date.now(), start: new Date(Date.now()-ms).toISOString(), end: new Date().toISOString(), hours: h, pay: h * hourlyRate }]);
-                                                setStartTime(null); setAccumulatedMs(0); setIsPaused(false);
-                                            }} className="flex-1 py-5 bg-rose-500 text-white rounded-3xl font-bold tap-bounce">Finish</button>
+                                            <button onClick={finishShift} className="flex-1 py-5 bg-rose-500 text-white rounded-3xl font-bold tap-bounce">Finish</button>
                                         </>
                                     )}
                                 </div>
                             </section>
 
-                            <div className="grid grid-cols-3 gap-3 mb-8 text-center">
-                                <div className="glass p-3 rounded-2xl"><p className="text-[8px] uppercase font-bold text-slate-400 mb-1">Daily</p><p className="font-bold text-sm">£{stats.daily.toFixed(2)}</p></div>
-                                <div className="glass p-3 rounded-2xl"><p className="text-[8px] uppercase font-bold text-slate-400 mb-1">Weekly</p><p className="font-bold text-sm">£{stats.weekly.toFixed(2)}</p></div>
-                                <div className="glass p-3 rounded-2xl"><p className="text-[8px] uppercase font-bold text-slate-400 mb-1">Monthly</p><p className="font-bold text-sm">£{stats.monthly.toFixed(2)}</p></div>
+                            <div className="grid grid-cols-3 gap-3">
+                                <StatCard label="Today" value={stats.day} />
+                                <StatCard label="Month" value={stats.month} />
+                                <StatCard label="Total" value={stats.total} />
                             </div>
 
-                            <div className="space-y-4">
-                                {sortedEntries.map(e => (
-                                    <div key={e.id} className="glass p-5 rounded-[2rem] flex justify-between items-center active:scale-95 transition-transform">
-                                        <div className="flex items-center gap-4">
-                                            <div className="date-tile h-12 w-12 rounded-xl flex flex-col items-center justify-center font-bold shadow-sm">
-                                                <span className="text-[8px] uppercase opacity-60">{new Date(e.start).toLocaleString('default',{month:'short'})}</span>
-                                                <span>{new Date(e.start).getDate()}</span>
+                            <div className="space-y-8 pt-4">
+                                {Object.entries(groupedEntries).map(([month, monthEntries]) => (
+                                    <div key={month} className="space-y-3">
+                                        <button onClick={() => setCollapsedMonths(p => ({...p, [month]: !p[month]}))} className="flex justify-between w-full px-2">
+                                            <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest">{month}</h3>
+                                            <i className={`fa-solid fa-chevron-down text-xs transition-transform ${collapsedMonths[month] ? '-rotate-90' : ''}`}></i>
+                                        </button>
+                                        {!collapsedMonths[month] && (
+                                            <div className="space-y-4">
+                                                {monthEntries.map(e => (
+                                                    <HistoryEntry key={e.id} entry={e} onEdit={setEditingEntry} onDelete={deleteEntry} />
+                                                ))}
                                             </div>
-                                            <div>
-                                                <p className="font-black">{e.hours.toFixed(2)}h</p>
-                                                <p className="text-[10px] text-slate-400 font-bold uppercase">£{e.pay.toFixed(2)}</p>
-                                            </div>
-                                        </div>
-                                        <div className="flex gap-4 text-slate-300">
-                                            <button onClick={() => setEditingEntry(e)} className="tap-bounce hover:text-blue-500"><i className="fa-solid fa-pen-to-square"></i></button>
-                                            <button onClick={() => confirm("Delete?") && setEntries(entries.filter(x=>x.id!==e.id))} className="tap-bounce hover:text-rose-500"><i className="fa-solid fa-trash-can"></i></button>
-                                        </div>
+                                        )}
                                     </div>
                                 ))}
                             </div>
                         </div>
                     ) : (
-                        <div className="animate-in slide-in-from-bottom duration-500 space-y-6">
+                        <div className="space-y-6">
                             <div className="glass p-6 rounded-[2.5rem]">
-                                <div className="flex justify-between items-center mb-6"><span>Hourly Rate</span><HourlyRateInput initialRate={hourlyRate} onSave={setHourlyRate} /></div>
-                                <div className="flex justify-between items-center"><span>Dark Mode</span><button onClick={()=>setIsDark(!isDark)} className={`w-12 h-6 rounded-full relative ${isDark?'bg-blue-600':'bg-slate-200'}`}><div className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${isDark?'translate-x-6':''}`} /></button></div>
+                                <div className="flex justify-between items-center mb-6">
+                                    <span>Hourly Rate</span>
+                                    <div className="flex items-center font-black text-blue-600">
+                                        <span>£</span>
+                                        <input type="number" step="0.01" value={hourlyRate} onChange={e => setHourlyRate(e.target.value)} className="w-14 border-none p-0 text-right font-bold bg-transparent focus:ring-0" />
+                                    </div>
+                                </div>
+                                <div className="flex justify-between items-center">
+                                    <span>Dark Mode</span>
+                                    <button onClick={() => setIsDark(!isDark)} className={`w-12 h-6 rounded-full relative transition-colors ${isDark ? 'bg-blue-600' : 'bg-slate-200'}`}>
+                                        <div className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${isDark ? 'translate-x-6' : ''}`} />
+                                    </button>
+                                </div>
                             </div>
                             <div className="glass p-6 rounded-[2.5rem]">
-                                <p className="text-[10px] font-black uppercase text-slate-400 mb-4 tracking-widest">Generate Report</p>
-                                <input type="month" value={reportMonth} onChange={e=>setReportMonth(e.target.value)} className="mb-4" />
-                                <button onClick={generatePDF} className="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold tap-bounce">Download PDF</button>
+                                <p className="text-[10px] font-black uppercase text-slate-400 mb-4">Export Report</p>
+                                <input type="month" value={reportMonth} onChange={e => setReportMonth(e.target.value)} className="w-full mb-4 bg-slate-50 dark:bg-slate-800 rounded-xl p-3 outline-none" />
+                                <button className="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold tap-bounce">Download PDF</button>
                             </div>
+                            <button onClick={() => confirm("Clear all data?") && localStorage.clear() + location.reload()} className="w-full py-4 bg-rose-50 text-rose-600 rounded-2xl font-bold text-xs uppercase tracking-widest">Factory Reset</button>
                         </div>
                     )}
 
+                    {/* Edit Modal Logic */}
                     {editingEntry && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-slate-900/80 backdrop-blur-sm animate-in fade-in">
-                            <div className="modal-bg w-full max-w-sm rounded-[3rem] p-10 shadow-2xl bg-white animate-in zoom-in duration-300">
-                                <h3 className="text-xl font-black mb-6 text-center">Edit Session</h3>
-                                <form onSubmit={handleManualSubmit} className="space-y-5">
-                                    <input type="date" name="date" required defaultValue={new Date(editingEntry.start).toISOString().split('T')[0]} />
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <input type="time" name="start" required defaultValue={new Date(editingEntry.start).toTimeString().slice(0,5)} />
-                                        <input type="time" name="end" required defaultValue={new Date(editingEntry.end).toTimeString().slice(0,5)} />
+                        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-slate-900/80 backdrop-blur-sm">
+                            <div className="modal-bg w-full max-w-sm rounded-[3rem] p-10 bg-white shadow-2xl">
+                                <h3 className="text-xl font-black mb-6 text-center text-slate-800 dark:text-white">Edit Session</h3>
+                                <div className="space-y-4">
+                                    <input type="date" defaultValue={new Date(editingEntry.start).toISOString().split('T')[0]} className="w-full p-4 border rounded-2xl dark:bg-slate-800 dark:border-slate-700" />
+                                    <div className="flex gap-4">
+                                        <button onClick={() => setEditingEntry(null)} className="flex-1 py-4 bg-slate-100 dark:bg-slate-800 rounded-2xl font-bold">Cancel</button>
+                                        <button className="flex-1 py-4 bg-blue-600 text-white rounded-2xl font-bold">Save</button>
                                     </div>
-                                    <input type="number" step="0.01" name="rate" required defaultValue={(editingEntry.pay / editingEntry.hours).toFixed(2)} />
-                                    <div className="flex gap-4 pt-4">
-                                        <button type="button" onClick={() => setEditingEntry(null)} className="flex-1 py-4 bg-slate-100 dark:bg-slate-800 rounded-2xl font-bold tap-bounce">Cancel</button>
-                                        <button type="submit" className="flex-1 py-4 bg-blue-600 text-white rounded-2xl font-bold tap-bounce">Save</button>
-                                    </div>
-                                </form>
+                                </div>
                             </div>
                         </div>
                     )}
@@ -251,8 +249,7 @@
             );
         };
 
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
     </script>
 </body>
 </html>
