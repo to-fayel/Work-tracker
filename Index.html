@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>TimeKeeper Elite Pro</title>
+    <title>TimeKeeper Chrono</title>
     
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -23,6 +23,7 @@
         .timer-font { font-family: 'JetBrains Mono', monospace; }
         .glass { background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.3); }
         .dark { background-color: #020617; color: #f8fafc; }
+        .dark .bg-white, .dark .modal-bg { background-color: #0f172a; color: white; }
         .dark .glass { background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255, 255, 255, 0.05); }
         .tap-bounce { transition: transform 0.1s; }
         .tap-bounce:active { transform: scale(0.95); }
@@ -38,7 +39,7 @@
     <script type="text/babel">
         const { useState, useEffect, useMemo } = React;
 
-        // FIXED: Isolated component to prevent keyboard from closing
+        // Stable Input Component (Fixed Keyboard Issue)
         const HourlyRateInput = ({ initialRate, onSave }) => {
             const [localValue, setLocalValue] = useState(initialRate);
             useEffect(() => setLocalValue(initialRate), [initialRate]);
@@ -64,6 +65,7 @@
             const [isDark, setIsDark] = useState(() => JSON.parse(localStorage.getItem('dark-mode')) || false);
             const [timer, setTimer] = useState({ elapsed: "00:00:00", livePay: "0.00" });
             const [reportMonth, setReportMonth] = useState(new Date().toISOString().slice(0, 7));
+            const [editingEntry, setEditingEntry] = useState(null);
 
             useEffect(() => {
                 localStorage.setItem('work-entries', JSON.stringify(entries));
@@ -75,25 +77,21 @@
                 document.body.className = isDark ? 'dark' : '';
             }, [entries, startTime, isPaused, accumulatedMs, hourlyRate, isDark]);
 
-            // --- CALCULATIONS & SORTING ---
-            const sortedEntries = useMemo(() => [...entries].sort((a, b) => new Date(b.start) - new Date(a.start)), [entries]);
+            // UPDATED: Sorting to Oldest-First (A - B)
+            const sortedEntries = useMemo(() => [...entries].sort((a, b) => new Date(a.start) - new Date(b.start)), [entries]);
 
             const stats = useMemo(() => {
                 const now = new Date();
                 const todayStr = now.toLocaleDateString();
                 const weekLimit = new Date(); weekLimit.setDate(now.getDate() - 7);
                 const monthLimit = new Date(); monthLimit.setDate(now.getDate() - 30);
-
                 return {
                     daily: entries.filter(e => new Date(e.start).toLocaleDateString() === todayStr).reduce((a, b) => a + b.pay, 0),
                     weekly: entries.filter(e => new Date(e.start) >= weekLimit).reduce((a, b) => a + b.pay, 0),
-                    monthly: entries.filter(e => new Date(e.start) >= monthLimit).reduce((a, b) => a + b.pay, 0),
-                    totalEarnings: entries.reduce((a, b) => a + b.pay, 0),
-                    totalHours: entries.reduce((a, b) => a + b.hours, 0)
+                    monthly: entries.filter(e => new Date(e.start) >= monthLimit).reduce((a, b) => a + b.pay, 0)
                 };
             }, [entries]);
 
-            // Timer Tick
             useEffect(() => {
                 let interval;
                 if (startTime && !isPaused) {
@@ -111,29 +109,22 @@
                     const totalMs = accumulatedMs;
                     const h = Math.floor(totalMs / 3600000);
                     const m = Math.floor((totalMs % 3600000) / 60000);
-                    setTimer({
-                        elapsed: `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00`,
-                        livePay: ((totalMs / 3600000) * hourlyRate).toFixed(2)
-                    });
+                    setTimer({ elapsed: `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00`, livePay: ((totalMs / 3600000) * hourlyRate).toFixed(2) });
                 }
                 return () => clearInterval(interval);
             }, [startTime, isPaused, accumulatedMs, hourlyRate]);
 
-            const handleFinish = () => {
-                if(!confirm("Finish and save this session?")) return;
-                const sessionMs = (startTime && !isPaused ? (new Date() - startTime) : 0) + accumulatedMs;
-                const hours = sessionMs / 3600000;
-                if(hours > 0.001) {
-                    const newEntry = {
-                        id: Date.now(),
-                        start: new Date(Date.now() - sessionMs).toISOString(),
-                        end: new Date().toISOString(),
-                        hours: hours,
-                        pay: hours * hourlyRate
-                    };
-                    setEntries([newEntry, ...entries]);
-                }
-                setStartTime(null); setAccumulatedMs(0); setIsPaused(false);
+            const handleManualSubmit = (e) => {
+                e.preventDefault();
+                const d = new FormData(e.target);
+                const rate = parseFloat(d.get('rate')) || hourlyRate;
+                let start = new Date(`${d.get('date')}T${d.get('start')}`);
+                let end = new Date(`${d.get('date')}T${d.get('end')}`);
+                if (end <= start) end.setDate(end.getDate() + 1);
+                const h = (end - start) / 3600000;
+                const entry = { id: editingEntry.id, start: start.toISOString(), end: end.toISOString(), hours: h, pay: h * rate };
+                setEntries(entries.map(ent => ent.id === editingEntry.id ? entry : ent));
+                setEditingEntry(null);
             };
 
             const generatePDF = () => {
@@ -143,153 +134,116 @@
                     const d = new Date(e.start);
                     return d.getFullYear() === parseInt(year) && (d.getMonth() + 1) === parseInt(month);
                 });
-
                 const tH = filtered.reduce((a, b) => a + b.hours, 0);
                 const tP = filtered.reduce((a, b) => a + b.pay, 0);
-
                 const { jsPDF } = window.jspdf;
                 const doc = new jsPDF();
                 doc.setFontSize(22); doc.setTextColor(37, 99, 235); doc.text("TimeKeeper", 14, 20);
-                doc.setFontSize(11); doc.setTextColor(100); doc.text(`Earnings Report: ${monthName} ${year}`, 14, 28);
-                
+                doc.setFontSize(12); doc.setTextColor(100); doc.text(`${monthName} ${year} Report`, 14, 28);
                 doc.autoTable({
                     startY: 35,
-                    head: [['Date', 'In', 'Out', 'Duration', 'Pay']],
-                    body: filtered.map(e => [
-                        new Date(e.start).toLocaleDateString('en-GB'),
-                        new Date(e.start).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}),
-                        new Date(e.end).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}),
-                        `${Math.floor(e.hours)}h ${Math.round((e.hours % 1) * 60)}m`,
-                        `£${e.pay.toFixed(2)}`
-                    ]),
+                    head: [['Date', 'Start', 'End', 'Duration', 'Earnings']],
+                    body: filtered.map(e => [new Date(e.start).toLocaleDateString('en-GB'), new Date(e.start).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}), new Date(e.end).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}), `${Math.floor(e.hours)}h ${Math.round((e.hours%1)*60)}m`, `£${e.pay.toFixed(2)}`]),
                     headStyles: { fillColor: [37, 99, 235] }
                 });
-
-                const finalY = doc.lastAutoTable.finalY + 15;
-                doc.setFontSize(12); doc.setTextColor(0);
-                doc.text(`Total Monthly Hours: ${tH.toFixed(2)}h`, 14, finalY);
-                doc.text(`Total Monthly Earnings: £${tP.toFixed(2)}`, 14, finalY + 7);
-                doc.save(`TimeKeeper_${monthName}_${year}.pdf`);
+                doc.text(`Total Hours: ${tH.toFixed(2)}h`, 14, doc.lastAutoTable.finalY + 15);
+                doc.text(`Total Earnings: £${tP.toFixed(2)}`, 14, doc.lastAutoTable.finalY + 23);
+                doc.save(`TimeKeeper_${monthName}.pdf`);
             };
 
             return (
                 <div className="max-w-md mx-auto min-h-screen p-6 pb-24">
                     <header className="flex justify-between items-center mb-8">
-                        <div className="flex items-center gap-2">
-                            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white shadow-lg shadow-blue-500/20"><i className="fa-solid fa-stopwatch"></i></div>
-                            <h1 className="text-xl font-black tracking-tight">TimeKeeper</h1>
-                        </div>
-                        <button onClick={() => setView(view === 'dashboard' ? 'settings' : 'dashboard')} className="w-12 h-12 glass rounded-2xl flex items-center justify-center tap-bounce shadow-sm">
+                        <h1 className="text-xl font-black">TimeKeeper</h1>
+                        <button onClick={() => setView(view === 'dashboard' ? 'settings' : 'dashboard')} className="w-12 h-12 glass rounded-2xl flex items-center justify-center tap-bounce">
                             <i className={`fa-solid ${view === 'dashboard' ? 'fa-gear' : 'fa-house'} text-slate-400`}></i>
                         </button>
                     </header>
 
                     {view === 'dashboard' ? (
                         <div className="animate-in fade-in duration-500">
-                            {/* Main Timer Card */}
-                            <section className={`rounded-[2.5rem] p-8 mb-6 transition-all duration-500 ${startTime && !isPaused ? 'bg-slate-900 text-white shadow-2xl scale-[1.02]' : 'glass shadow-xl'}`}>
+                            <section className={`rounded-[2.5rem] p-8 mb-6 transition-all ${startTime && !isPaused ? 'bg-slate-900 text-white shadow-2xl' : 'glass shadow-xl'}`}>
                                 <div className="text-center">
-                                    <p className="text-[10px] font-black uppercase text-blue-500 tracking-widest mb-2">Live Session</p>
-                                    <div className="timer-font text-6xl font-bold mb-4 tracking-tighter tabular-nums">{timer.elapsed}</div>
-                                    <div className="text-2xl font-black mb-8 opacity-90">£{timer.livePay}</div>
+                                    <div className="timer-font text-6xl font-bold mb-4">{timer.elapsed}</div>
+                                    <div className="text-2xl font-black mb-8">£{timer.livePay}</div>
                                 </div>
                                 <div className="flex gap-3">
                                     {!startTime ? (
-                                        <button onClick={() => setStartTime(new Date())} className="w-full py-5 bg-blue-600 text-white rounded-3xl font-bold text-lg tap-bounce shadow-lg shadow-blue-500/30">Start Shift</button>
+                                        <button onClick={() => setStartTime(new Date())} className="w-full py-5 bg-blue-600 text-white rounded-3xl font-bold tap-bounce">Start Shift</button>
                                     ) : (
                                         <>
                                             <button onClick={() => {
                                                 if(isPaused) { setStartTime(new Date()); setIsPaused(false); }
                                                 else { setAccumulatedMs(prev => prev + (new Date() - startTime)); setIsPaused(true); }
                                             }} className="flex-1 py-5 bg-slate-800 text-white rounded-3xl font-bold tap-bounce">{isPaused ? "Resume" : "Pause"}</button>
-                                            <button onClick={handleFinish} className="flex-1 py-5 bg-rose-500 text-white rounded-3xl font-bold tap-bounce">Finish</button>
+                                            <button onClick={() => {
+                                                const ms = (startTime && !isPaused ? (new Date() - startTime) : 0) + accumulatedMs;
+                                                const h = ms / 3600000;
+                                                if(h > 0.01) setEntries([...entries, { id: Date.now(), start: new Date(Date.now()-ms).toISOString(), end: new Date().toISOString(), hours: h, pay: h * hourlyRate }]);
+                                                setStartTime(null); setAccumulatedMs(0); setIsPaused(false);
+                                            }} className="flex-1 py-5 bg-rose-500 text-white rounded-3xl font-bold tap-bounce">Finish</button>
                                         </>
                                     )}
                                 </div>
                             </section>
 
-                            {/* Stats Grid */}
-                            <div className="grid grid-cols-3 gap-3 mb-8">
-                                <div className="glass p-4 rounded-3xl text-center shadow-sm">
-                                    <p className="text-[8px] font-black text-slate-400 uppercase mb-1">Today</p>
-                                    <p className="text-sm font-black">£{stats.daily.toFixed(2)}</p>
-                                </div>
-                                <div className="glass p-4 rounded-3xl text-center shadow-sm">
-                                    <p className="text-[8px] font-black text-slate-400 uppercase mb-1">Weekly</p>
-                                    <p className="text-sm font-black">£{stats.weekly.toFixed(2)}</p>
-                                </div>
-                                <div className="glass p-4 rounded-3xl text-center shadow-sm">
-                                    <p className="text-[8px] font-black text-slate-400 uppercase mb-1">Monthly</p>
-                                    <p className="text-sm font-black">£{stats.monthly.toFixed(2)}</p>
-                                </div>
+                            <div className="grid grid-cols-3 gap-3 mb-8 text-center">
+                                <div className="glass p-3 rounded-2xl"><p className="text-[8px] uppercase font-bold text-slate-400 mb-1">Daily</p><p className="font-bold text-sm">£{stats.daily.toFixed(2)}</p></div>
+                                <div className="glass p-3 rounded-2xl"><p className="text-[8px] uppercase font-bold text-slate-400 mb-1">Weekly</p><p className="font-bold text-sm">£{stats.weekly.toFixed(2)}</p></div>
+                                <div className="glass p-3 rounded-2xl"><p className="text-[8px] uppercase font-bold text-slate-400 mb-1">Monthly</p><p className="font-bold text-sm">£{stats.monthly.toFixed(2)}</p></div>
                             </div>
 
-                            <div className="flex justify-between items-end mb-6 px-2">
-                                <h2 className="text-xl font-black">History</h2>
-                                <div className="text-right">
-                                    <p className="text-[9px] font-black text-slate-400 uppercase">Lifetime Earnings</p>
-                                    <p className="font-bold text-blue-600">£{stats.totalEarnings.toFixed(2)}</p>
-                                </div>
-                            </div>
-
-                            {/* Session List (Sorted) */}
                             <div className="space-y-4">
                                 {sortedEntries.map(e => (
-                                    <div key={e.id} className="glass p-5 rounded-[2rem] flex justify-between items-center shadow-sm">
+                                    <div key={e.id} className="glass p-5 rounded-[2rem] flex justify-between items-center active:scale-95 transition-transform">
                                         <div className="flex items-center gap-4">
-                                            <div className="date-tile h-12 w-12 rounded-xl flex flex-col items-center justify-center shadow-sm border border-white/20">
-                                                <span className="text-[8px] font-black uppercase leading-none opacity-60">{new Date(e.start).toLocaleString('default', {month:'short'})}</span>
-                                                <span className="text-lg font-black leading-none">{new Date(e.start).getDate()}</span>
+                                            <div className="date-tile h-12 w-12 rounded-xl flex flex-col items-center justify-center font-bold shadow-sm">
+                                                <span className="text-[8px] uppercase opacity-60">{new Date(e.start).toLocaleString('default',{month:'short'})}</span>
+                                                <span>{new Date(e.start).getDate()}</span>
                                             </div>
                                             <div>
-                                                <p className="text-[10px] font-bold text-slate-400 uppercase leading-none mb-1">{new Date(e.start).getHours()}:{String(new Date(e.start).getMinutes()).padStart(2,'0')}</p>
-                                                <p className="font-black text-base">{e.hours.toFixed(2)}h</p>
+                                                <p className="font-black">{e.hours.toFixed(2)}h</p>
+                                                <p className="text-[10px] text-slate-400 font-bold uppercase">£{e.pay.toFixed(2)}</p>
                                             </div>
                                         </div>
-                                        <div className="text-right">
-                                            <p className="text-emerald-500 font-black text-xl leading-none mb-1">£{e.pay.toFixed(2)}</p>
-                                            <button onClick={() => confirm("Delete entry?") && setEntries(entries.filter(x=>x.id!==e.id))} className="text-slate-300 text-xs hover:text-rose-500 transition-colors">
-                                                <i className="fa-solid fa-trash-can"></i>
-                                            </button>
+                                        <div className="flex gap-4 text-slate-300">
+                                            <button onClick={() => setEditingEntry(e)} className="tap-bounce hover:text-blue-500"><i className="fa-solid fa-pen-to-square"></i></button>
+                                            <button onClick={() => confirm("Delete?") && setEntries(entries.filter(x=>x.id!==e.id))} className="tap-bounce hover:text-rose-500"><i className="fa-solid fa-trash-can"></i></button>
                                         </div>
                                     </div>
                                 ))}
-                                {entries.length === 0 && <p className="text-center text-slate-400 py-10 font-medium">No work history yet.</p>}
                             </div>
                         </div>
                     ) : (
                         <div className="animate-in slide-in-from-bottom duration-500 space-y-6">
-                            {/* Settings Card */}
-                            <div className="glass p-6 rounded-[2.5rem] shadow-sm">
-                                <p className="text-[10px] font-black uppercase text-slate-400 mb-6 tracking-widest">General Preferences</p>
-                                <div className="flex justify-between items-center mb-6">
-                                    <span className="font-bold">Hourly Rate</span>
-                                    <HourlyRateInput initialRate={hourlyRate} onSave={setHourlyRate} />
-                                </div>
-                                <div className="flex justify-between items-center">
-                                    <span className="font-bold">Dark Appearance</span>
-                                    <button onClick={() => setIsDark(!isDark)} className={`w-12 h-6 rounded-full relative transition-colors duration-300 ${isDark ? 'bg-blue-600' : 'bg-slate-200'}`}>
-                                        <div className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform duration-300 ${isDark ? 'translate-x-6' : ''}`} />
-                                    </button>
-                                </div>
+                            <div className="glass p-6 rounded-[2.5rem]">
+                                <div className="flex justify-between items-center mb-6"><span>Hourly Rate</span><HourlyRateInput initialRate={hourlyRate} onSave={setHourlyRate} /></div>
+                                <div className="flex justify-between items-center"><span>Dark Mode</span><button onClick={()=>setIsDark(!isDark)} className={`w-12 h-6 rounded-full relative ${isDark?'bg-blue-600':'bg-slate-200'}`}><div className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${isDark?'translate-x-6':''}`} /></button></div>
                             </div>
-
-                            {/* PDF Report Card */}
-                            <div className="glass p-6 rounded-[2.5rem] shadow-sm">
-                                <p className="text-[10px] font-black uppercase text-slate-400 mb-4 tracking-widest">Generate Monthly Report</p>
-                                <div className="space-y-4">
-                                    <input type="month" value={reportMonth} onChange={e => setReportMonth(e.target.value)} />
-                                    <button onClick={generatePDF} className="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold flex items-center justify-center gap-2 tap-bounce shadow-lg shadow-blue-500/20">
-                                        <i className="fa-solid fa-file-pdf"></i> Download PDF
-                                    </button>
-                                </div>
+                            <div className="glass p-6 rounded-[2.5rem]">
+                                <p className="text-[10px] font-black uppercase text-slate-400 mb-4 tracking-widest">Generate Report</p>
+                                <input type="month" value={reportMonth} onChange={e=>setReportMonth(e.target.value)} className="mb-4" />
+                                <button onClick={generatePDF} className="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold tap-bounce">Download PDF</button>
                             </div>
+                        </div>
+                    )}
 
-                            <div className="px-2 pt-4">
-                                <button onClick={() => { if(confirm("Permanently clear all data?")) { setEntries([]); localStorage.clear(); window.location.reload(); }}} className="w-full py-4 bg-rose-50 text-rose-600 dark:bg-rose-950/20 rounded-2xl font-bold text-xs uppercase tracking-widest tap-bounce">
-                                    Factory Reset App
-                                </button>
-                                <p className="text-center text-[10px] text-slate-400 mt-6 font-medium">TimeKeeper v2.1 • Created for Excellence</p>
+                    {editingEntry && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-slate-900/80 backdrop-blur-sm animate-in fade-in">
+                            <div className="modal-bg w-full max-w-sm rounded-[3rem] p-10 shadow-2xl bg-white animate-in zoom-in duration-300">
+                                <h3 className="text-xl font-black mb-6 text-center">Edit Session</h3>
+                                <form onSubmit={handleManualSubmit} className="space-y-5">
+                                    <input type="date" name="date" required defaultValue={new Date(editingEntry.start).toISOString().split('T')[0]} />
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <input type="time" name="start" required defaultValue={new Date(editingEntry.start).toTimeString().slice(0,5)} />
+                                        <input type="time" name="end" required defaultValue={new Date(editingEntry.end).toTimeString().slice(0,5)} />
+                                    </div>
+                                    <input type="number" step="0.01" name="rate" required defaultValue={(editingEntry.pay / editingEntry.hours).toFixed(2)} />
+                                    <div className="flex gap-4 pt-4">
+                                        <button type="button" onClick={() => setEditingEntry(null)} className="flex-1 py-4 bg-slate-100 dark:bg-slate-800 rounded-2xl font-bold tap-bounce">Cancel</button>
+                                        <button type="submit" className="flex-1 py-4 bg-blue-600 text-white rounded-2xl font-bold tap-bounce">Save</button>
+                                    </div>
+                                </form>
                             </div>
                         </div>
                     )}
