@@ -43,8 +43,7 @@
             return `${secs}s`;
         };
 
-        // --- PERFORMANCE OPTIMIZED SUB-COMPONENTS ---
-
+        // --- SUB-COMPONENTS ---
         const StatCard = memo(({ label, value }) => (
             <div className="glass p-3 rounded-2xl shadow-sm text-center">
                 <p className="text-[8px] uppercase font-bold text-slate-400 mb-1">{label}</p>
@@ -88,8 +87,8 @@
         ));
 
         // --- MAIN APPLICATION ---
-
         const App = () => {
+            // Core States with LocalStorage Hydration
             const [view, setView] = useState('dashboard');
             const [entries, setEntries] = useState(() => JSON.parse(localStorage.getItem('work-entries')) || []);
             const [startTime, setStartTime] = useState(() => localStorage.getItem('active-start-time') ? new Date(localStorage.getItem('active-start-time')) : null);
@@ -98,22 +97,29 @@
             const [hourlyRate, setHourlyRate] = useState(() => parseFloat(localStorage.getItem('hourly-rate')) || 6.00);
             const [isDark, setIsDark] = useState(() => JSON.parse(localStorage.getItem('dark-mode')) || false);
             
+            // UI States
             const [timer, setTimer] = useState({ elapsed: "00:00:00", livePay: "0.00" });
             const [editingEntry, setEditingEntry] = useState(null);
             const [reportMonth, setReportMonth] = useState(new Date().toISOString().slice(0, 7));
             const [collapsedMonths, setCollapsedMonths] = useState({});
             const [isGenerating, setIsGenerating] = useState(false);
 
+            // AUTO-SAVE LOGIC: Entries Persistent Storage
             useEffect(() => {
                 localStorage.setItem('work-entries', JSON.stringify(entries));
+            }, [entries]);
+
+            // App State Persistence
+            useEffect(() => {
                 localStorage.setItem('active-start-time', startTime ? startTime.toISOString() : '');
                 localStorage.setItem('is-paused', JSON.stringify(isPaused));
                 localStorage.setItem('accumulated-ms', JSON.stringify(accumulatedMs));
                 localStorage.setItem('hourly-rate', hourlyRate);
                 localStorage.setItem('dark-mode', JSON.stringify(isDark));
                 document.body.className = isDark ? 'dark' : '';
-            }, [entries, startTime, isPaused, accumulatedMs, hourlyRate, isDark]);
+            }, [startTime, isPaused, accumulatedMs, hourlyRate, isDark]);
 
+            // Stats & Grouping
             const groupedEntries = useMemo(() => {
                 const sorted = [...entries].sort((a, b) => new Date(b.start) - new Date(a.start));
                 return sorted.reduce((groups, entry) => {
@@ -131,6 +137,7 @@
                 return { day: day.toFixed(2), month: month.toFixed(2), total: entries.reduce((a, b) => a + b.pay, 0).toFixed(2) };
             }, [entries]);
 
+            // Timer Tick
             useEffect(() => {
                 let interval;
                 if (startTime && !isPaused) {
@@ -148,6 +155,7 @@
                 return () => clearInterval(interval);
             }, [startTime, isPaused, accumulatedMs, hourlyRate]);
 
+            // Methods
             const toggleMonth = useCallback((month) => {
                 setCollapsedMonths(p => ({...p, [month]: !p[month]}));
             }, []);
@@ -160,19 +168,22 @@
                 if(!confirm("Finish and save this session?")) return;
                 const ms = (startTime && !isPaused ? (new Date() - startTime) : 0) + accumulatedMs;
                 const h = ms / 3600000;
-                if(h > 0.001) { // Save even short tests
-                    setEntries(prev => [...prev, { 
+                
+                if(h > 0.0001) {
+                    const newEntry = { 
                         id: Date.now(), 
                         start: new Date(Date.now()-ms).toISOString(), 
                         end: new Date().toISOString(), 
                         hours: h, 
                         pay: h * hourlyRate 
-                    }]);
+                    };
+                    setEntries(prev => [...prev, newEntry]);
                 }
+                
                 setStartTime(null); 
                 setAccumulatedMs(0); 
                 setIsPaused(false);
-                setTimer({ elapsed: "00:00:00", livePay: "0.00" }); // Merged Fix: Reset Display
+                setTimer({ elapsed: "00:00:00", livePay: "0.00" });
             };
 
             const generatePDF = () => {
@@ -203,7 +214,7 @@
                                 new Date(e.start).toLocaleDateString('en-GB'),
                                 new Date(e.start).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}),
                                 new Date(e.end).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}),
-                                formatDuration(e.hours), // Merged Fix: PDF duration
+                                formatDuration(e.hours), 
                                 `£${e.pay.toFixed(2)}`
                             ]),
                             headStyles: { fillColor: [37, 99, 235] }
@@ -315,7 +326,7 @@
                         <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-slate-900/80 backdrop-blur-sm">
                             <div className="modal-bg w-full max-w-sm rounded-[3rem] p-10 bg-white shadow-2xl">
                                 <h3 className="text-xl font-black mb-6 text-center">Edit Session</h3>
-                                <p className="text-sm text-slate-400 text-center mb-8">Session editing logic is preserved.</p>
+                                <p className="text-sm text-slate-400 text-center mb-8">Manual entry and edit logic is synced to persistent storage.</p>
                                 <button onClick={() => setEditingEntry(null)} className="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold">Close</button>
                             </div>
                         </div>
