@@ -88,7 +88,6 @@
 
         // --- MAIN APPLICATION ---
         const App = () => {
-            // Core States with LocalStorage Hydration
             const [view, setView] = useState('dashboard');
             const [entries, setEntries] = useState(() => JSON.parse(localStorage.getItem('work-entries')) || []);
             const [startTime, setStartTime] = useState(() => localStorage.getItem('active-start-time') ? new Date(localStorage.getItem('active-start-time')) : null);
@@ -97,19 +96,20 @@
             const [hourlyRate, setHourlyRate] = useState(() => parseFloat(localStorage.getItem('hourly-rate')) || 6.00);
             const [isDark, setIsDark] = useState(() => JSON.parse(localStorage.getItem('dark-mode')) || false);
             
-            // UI States
             const [timer, setTimer] = useState({ elapsed: "00:00:00", livePay: "0.00" });
             const [editingEntry, setEditingEntry] = useState(null);
             const [reportMonth, setReportMonth] = useState(new Date().toISOString().slice(0, 7));
             const [collapsedMonths, setCollapsedMonths] = useState({});
             const [isGenerating, setIsGenerating] = useState(false);
 
-            // AUTO-SAVE LOGIC: Entries Persistent Storage
+            // Manual Entry State
+            const [manualEntry, setManualEntry] = useState({ date: new Date().toISOString().slice(0, 10), start: "09:00", end: "17:00" });
+            const [showManual, setShowManual] = useState(false);
+
             useEffect(() => {
                 localStorage.setItem('work-entries', JSON.stringify(entries));
             }, [entries]);
 
-            // App State Persistence
             useEffect(() => {
                 localStorage.setItem('active-start-time', startTime ? startTime.toISOString() : '');
                 localStorage.setItem('is-paused', JSON.stringify(isPaused));
@@ -119,7 +119,6 @@
                 document.body.className = isDark ? 'dark' : '';
             }, [startTime, isPaused, accumulatedMs, hourlyRate, isDark]);
 
-            // Stats & Grouping
             const groupedEntries = useMemo(() => {
                 const sorted = [...entries].sort((a, b) => new Date(b.start) - new Date(a.start));
                 return sorted.reduce((groups, entry) => {
@@ -137,7 +136,6 @@
                 return { day: day.toFixed(2), month: month.toFixed(2), total: entries.reduce((a, b) => a + b.pay, 0).toFixed(2) };
             }, [entries]);
 
-            // Timer Tick
             useEffect(() => {
                 let interval;
                 if (startTime && !isPaused) {
@@ -155,7 +153,25 @@
                 return () => clearInterval(interval);
             }, [startTime, isPaused, accumulatedMs, hourlyRate]);
 
-            // Methods
+            const handleManualSave = () => {
+                const startDateTime = new Date(`${manualEntry.date}T${manualEntry.start}`);
+                let endDateTime = new Date(`${manualEntry.date}T${manualEntry.end}`);
+                if (endDateTime < startDateTime) endDateTime.setDate(endDateTime.getDate() + 1);
+                const diffMs = endDateTime - startDateTime;
+                const h = diffMs / 3600000;
+                if (h <= 0) return alert("End time must be after start time");
+                const newEntry = {
+                    id: Date.now(),
+                    start: startDateTime.toISOString(),
+                    end: endDateTime.toISOString(),
+                    hours: h,
+                    pay: h * hourlyRate
+                };
+                setEntries(prev => [...prev, newEntry]);
+                setShowManual(false);
+                alert("Session saved!");
+            };
+
             const toggleMonth = useCallback((month) => {
                 setCollapsedMonths(p => ({...p, [month]: !p[month]}));
             }, []);
@@ -168,21 +184,16 @@
                 if(!confirm("Finish and save this session?")) return;
                 const ms = (startTime && !isPaused ? (new Date() - startTime) : 0) + accumulatedMs;
                 const h = ms / 3600000;
-                
                 if(h > 0.0001) {
-                    const newEntry = { 
+                    setEntries(prev => [...prev, { 
                         id: Date.now(), 
                         start: new Date(Date.now()-ms).toISOString(), 
                         end: new Date().toISOString(), 
                         hours: h, 
                         pay: h * hourlyRate 
-                    };
-                    setEntries(prev => [...prev, newEntry]);
+                    }]);
                 }
-                
-                setStartTime(null); 
-                setAccumulatedMs(0); 
-                setIsPaused(false);
+                setStartTime(null); setAccumulatedMs(0); setIsPaused(false);
                 setTimer({ elapsed: "00:00:00", livePay: "0.00" });
             };
 
@@ -192,21 +203,16 @@
                     try {
                         const [year, month] = reportMonth.split('-');
                         const monthName = new Date(year, month - 1).toLocaleString('default', { month: 'long' });
-                        const filtered = entries
-                            .filter(e => {
-                                const d = new Date(e.start);
-                                return d.getFullYear() === parseInt(year) && (d.getMonth() + 1) === parseInt(month);
-                            })
-                            .sort((a, b) => new Date(b.start) - new Date(a.start));
-
+                        const filtered = entries.filter(e => {
+                            const d = new Date(e.start);
+                            return d.getFullYear() === parseInt(year) && (d.getMonth() + 1) === parseInt(month);
+                        }).sort((a, b) => new Date(b.start) - new Date(a.start));
                         const totalH = filtered.reduce((a, b) => a + b.hours, 0);
                         const totalP = filtered.reduce((a, b) => a + b.pay, 0);
-
                         const { jsPDF } = window.jspdf;
                         const doc = new jsPDF();
                         doc.setFontSize(22); doc.setTextColor(37, 99, 235); doc.text("TimeKeeper Report", 14, 20);
                         doc.setFontSize(12); doc.setTextColor(100); doc.text(`${monthName} ${year}`, 14, 28);
-
                         doc.autoTable({
                             startY: 35,
                             head: [['Date', 'Start', 'End', 'Duration', 'Earnings']],
@@ -214,20 +220,14 @@
                                 new Date(e.start).toLocaleDateString('en-GB'),
                                 new Date(e.start).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}),
                                 new Date(e.end).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}),
-                                formatDuration(e.hours), 
-                                `£${e.pay.toFixed(2)}`
+                                formatDuration(e.hours), `£${e.pay.toFixed(2)}`
                             ]),
                             headStyles: { fillColor: [37, 99, 235] }
                         });
-
                         const finalY = doc.lastAutoTable.finalY || 35;
                         doc.text(`Monthly Total: ${totalH.toFixed(2)} hours | £${totalP.toFixed(2)}`, 14, finalY + 15);
                         doc.save(`TimeKeeper_${monthName}_${year}.pdf`);
-                    } catch (err) {
-                        alert("PDF generation failed.");
-                    } finally {
-                        setIsGenerating(false);
-                    }
+                    } catch (err) { alert("PDF generation failed."); } finally { setIsGenerating(false); }
                 }, 100);
             };
 
@@ -267,6 +267,29 @@
                                 </div>
                             </section>
 
+                            <section className="glass rounded-[2rem] p-6">
+                                <button onClick={() => setShowManual(!showManual)} className="w-full flex justify-between items-center font-bold text-slate-500 uppercase text-[10px] tracking-widest">
+                                    <span>Add Session Manually</span>
+                                    <i className={`fa-solid ${showManual ? 'fa-minus' : 'fa-plus'} text-blue-600`}></i>
+                                </button>
+                                {showManual && (
+                                    <div className="mt-4 space-y-4 animate-in fade-in duration-300">
+                                        <input type="date" value={manualEntry.date} onChange={e => setManualEntry({...manualEntry, date: e.target.value})} className="w-full bg-slate-50 dark:bg-slate-800 p-3 rounded-xl border-none outline-none font-bold" />
+                                        <div className="flex gap-2">
+                                            <div className="flex-1">
+                                                <label className="text-[8px] uppercase font-black text-slate-400 ml-2">Start</label>
+                                                <input type="time" value={manualEntry.start} onChange={e => setManualEntry({...manualEntry, start: e.target.value})} className="w-full bg-slate-50 dark:bg-slate-800 p-3 rounded-xl border-none outline-none font-bold" />
+                                            </div>
+                                            <div className="flex-1">
+                                                <label className="text-[8px] uppercase font-black text-slate-400 ml-2">End</label>
+                                                <input type="time" value={manualEntry.end} onChange={e => setManualEntry({...manualEntry, end: e.target.value})} className="w-full bg-slate-50 dark:bg-slate-800 p-3 rounded-xl border-none outline-none font-bold" />
+                                            </div>
+                                        </div>
+                                        <button onClick={handleManualSave} className="w-full py-4 bg-emerald-500 text-white rounded-2xl font-bold tap-bounce shadow-lg shadow-emerald-500/20">Save Manual Session</button>
+                                    </div>
+                                )}
+                            </section>
+
                             <div className="grid grid-cols-3 gap-3">
                                 <StatCard label="Today" value={stats.day} />
                                 <StatCard label="Month" value={stats.month} />
@@ -278,15 +301,7 @@
                                     <p className="text-center text-slate-400 py-10 font-medium">No history recorded yet.</p>
                                 ) : (
                                     Object.entries(groupedEntries).map(([month, monthEntries]) => (
-                                        <MonthSection 
-                                            key={month}
-                                            month={month}
-                                            monthEntries={monthEntries}
-                                            isCollapsed={collapsedMonths[month]}
-                                            onToggle={toggleMonth}
-                                            onEdit={setEditingEntry}
-                                            onDelete={deleteEntry}
-                                        />
+                                        <MonthSection key={month} month={month} monthEntries={monthEntries} isCollapsed={collapsedMonths[month]} onToggle={toggleMonth} onEdit={setEditingEntry} onDelete={deleteEntry} />
                                     ))
                                 )}
                             </div>
@@ -319,16 +334,6 @@
                             </div>
 
                             <button onClick={() => confirm("Clear all data?") && localStorage.clear() + location.reload()} className="w-full py-4 bg-rose-50 text-rose-600 rounded-2xl font-bold text-xs uppercase tracking-widest tap-bounce">Factory Reset</button>
-                        </div>
-                    )}
-
-                    {editingEntry && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-slate-900/80 backdrop-blur-sm">
-                            <div className="modal-bg w-full max-w-sm rounded-[3rem] p-10 bg-white shadow-2xl">
-                                <h3 className="text-xl font-black mb-6 text-center">Edit Session</h3>
-                                <p className="text-sm text-slate-400 text-center mb-8">Manual entry and edit logic is synced to persistent storage.</p>
-                                <button onClick={() => setEditingEntry(null)} className="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold">Close</button>
-                            </div>
                         </div>
                     )}
                 </div>
